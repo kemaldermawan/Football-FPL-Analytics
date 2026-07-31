@@ -11,21 +11,21 @@ st.title("⚽ Football - Fantasy Premier League Analytics")
 st.markdown("Welcome to the FPL analytics system. Displaying live data from the official API.")
 
 st.sidebar.header("Control Parameters")
-st.sidebar.info("Data extraction module successfully integrated.")
+st.sidebar.info("Data extraction and relationship mapping modules successfully integrated.")
 
 st.subheader("Live Player Metrics")
 
 raw_data = get_fpl_players()
 
 if not raw_data.empty:
-    display_data = raw_data[['first_name', 'second_name', 'team', 'element_type', 'now_cost', 'total_points']].copy()
+    display_data = raw_data[['first_name', 'second_name', 'team_name', 'position_name', 'now_cost', 'total_points']].copy()
     display_data['now_cost'] = display_data['now_cost'] / 10.0
     
     display_data.rename(columns={
         'first_name': 'First Name',
         'second_name': 'Last Name',
-        'team': 'Team ID',
-        'element_type': 'Position ID',
+        'team_name': 'Team',
+        'position_name': 'Position',
         'now_cost': 'Cost',
         'total_points': 'Total Points'
     }, inplace=True)
