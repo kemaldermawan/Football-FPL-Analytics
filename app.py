@@ -10,11 +10,6 @@ st.set_page_config(
 st.title("⚽ Football - Fantasy Premier League Analytics")
 st.markdown("Welcome to the FPL analytics system. Displaying live data from the official API.")
 
-st.sidebar.header("Control Parameters")
-st.sidebar.info("Data extraction and relationship mapping modules successfully integrated.")
-
-st.subheader("Live Player Metrics")
-
 raw_data = get_fpl_players()
 
 if not raw_data.empty:
@@ -30,6 +25,20 @@ if not raw_data.empty:
         'total_points': 'Total Points'
     }, inplace=True)
     
-    st.dataframe(display_data, use_container_width=True)
+    st.sidebar.header("Control Parameters")
+    
+    teams_list = sorted(display_data['Team'].unique())
+    positions_list = display_data['Position'].unique()
+    
+    selected_teams = st.sidebar.multiselect("Select Teams", teams_list, default=teams_list)
+    selected_positions = st.sidebar.multiselect("Select Positions", positions_list, default=positions_list)
+    
+    filtered_data = display_data[
+        (display_data['Team'].isin(selected_teams)) &
+        (display_data['Position'].isin(selected_positions))
+    ]
+    
+    st.subheader(f"Live Player Metrics ({len(filtered_data)} Players)")
+    st.dataframe(filtered_data, use_container_width=True)
 else:
     st.error("System failed to retrieve data from the FPL API.")
