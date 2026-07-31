@@ -2,6 +2,7 @@ import streamlit as st
 from src.fetcher import get_fpl_players
 from src.visuals import create_scatter_plot, create_team_bar_chart
 from src.fpl_solver import optimize_squad
+from src.tactical import draw_pass_network
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -68,16 +69,21 @@ if not raw_data.empty:
     st.subheader(f"Live Player Metrics ({len(filtered_data)} Players)")
     st.dataframe(filtered_data, use_container_width=True)
     
-    st.subheader("Data Visualizations")
-    tab1, tab2 = st.tabs(["Cost vs Points (Scatter)", "Team Performance (Bar)"])
+    st.subheader("Data Visualizations & Tactical Board")
+    tab1, tab2, tab3 = st.tabs(["Cost vs Points", "Team Performance", "Tactical Pitch"])
     
     with tab1:
         scatter_chart = create_scatter_plot(filtered_data)
         st.altair_chart(scatter_chart, use_container_width=True)
-    
+        
     with tab2:
         bar_chart = create_team_bar_chart(filtered_data)
         st.altair_chart(bar_chart, use_container_width=True)
+        
+    with tab3:
+        st.info("Displaying spatial event data mapping using mplsoccer.")
+        tactical_fig = draw_pass_network()
+        st.pyplot(tactical_fig)
 
     st.markdown("---")
     st.subheader("Operations Research: MILP Squad Optimizer")
