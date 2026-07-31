@@ -1,6 +1,7 @@
 import streamlit as st
 from src.fetcher import get_fpl_players
 from src.visuals import create_scatter_plot, create_team_bar_chart
+from src.fpl_solver import optimize_squad
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -73,10 +74,27 @@ if not raw_data.empty:
     with tab1:
         scatter_chart = create_scatter_plot(filtered_data)
         st.altair_chart(scatter_chart, use_container_width=True)
-        
+    
     with tab2:
         bar_chart = create_team_bar_chart(filtered_data)
         st.altair_chart(bar_chart, use_container_width=True)
 
+    st.markdown("---")
+    st.subheader("Operations Research: MILP Squad Optimizer")
+    st.info("Execute the deterministic PuLP solver to generate the mathematically optimal 15-man squad under strict FPL budget and quota constraints.")
+    
+    if st.button("Generate Optimal Squad"):
+        with st.spinner("Calculating optimal integer combinations..."):
+            optimal_squad = optimize_squad(display_data, budget=100.0)
+            
+            st.success("Mathematical optimization complete.")
+            st.dataframe(optimal_squad, use_container_width=True)
+            
+            total_cost = optimal_squad['Cost'].sum()
+            total_pts = optimal_squad['Total Points'].sum()
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Squad Expected Total Points", f"{total_pts} Pts")
+            col2.metric("Total Budget Utilized", f"£{total_cost:.1f}M")
 else:
     st.error("System failed to retrieve data from the FPL API.")
