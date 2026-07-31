@@ -1,6 +1,6 @@
 import streamlit as st
-import altair as alt
 from src.fetcher import get_fpl_players
+from src.visuals import create_scatter_plot
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -60,13 +60,7 @@ if not raw_data.empty:
     
     st.subheader("Cost vs Total Points Analysis")
     
-    scatter_chart = alt.Chart(filtered_data).mark_circle(size=60).encode(
-        x=alt.X('Cost', scale=alt.Scale(zero=False)),
-        y=alt.Y('Total Points', scale=alt.Scale(zero=False)),
-        color='Position',
-        tooltip=['First Name', 'Last Name', 'Team', 'Cost', 'Total Points', 'Value (Pts/Cost)']
-    ).interactive()
-    
+    scatter_chart = create_scatter_plot(filtered_data)
     st.altair_chart(scatter_chart, use_container_width=True)
 
 else:
