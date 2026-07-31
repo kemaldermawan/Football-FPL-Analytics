@@ -1,6 +1,5 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
+from src.fetcher import get_fpl_players
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -9,14 +8,28 @@ st.set_page_config(
 )
 
 st.title("⚽ Football - Fantasy Premier League Analytics")
-st.markdown("Welcome to the FPL analytics system. The virtual environment is operating correctly.")
+st.markdown("Welcome to the FPL analytics system. Displaying live data from the official API.")
 
 st.sidebar.header("Control Parameters")
-st.sidebar.info("The data extraction module will be integrated in the next phase.")
+st.sidebar.info("Data extraction module successfully integrated.")
 
-st.subheader("Metric Data Testing")
-dummy_data = pd.DataFrame({
-    'Player': ['Erling Haaland', 'Mohamed Salah', 'Bukayo Saka'],
-    'FPL Points': [14, 12, 9]
-})
-st.dataframe(dummy_data, use_container_width=True)
+st.subheader("Live Player Metrics")
+
+raw_data = get_fpl_players()
+
+if not raw_data.empty:
+    display_data = raw_data[['first_name', 'second_name', 'team', 'element_type', 'now_cost', 'total_points']].copy()
+    display_data['now_cost'] = display_data['now_cost'] / 10.0
+    
+    display_data.rename(columns={
+        'first_name': 'First Name',
+        'second_name': 'Last Name',
+        'team': 'Team ID',
+        'element_type': 'Position ID',
+        'now_cost': 'Cost',
+        'total_points': 'Total Points'
+    }, inplace=True)
+    
+    st.dataframe(display_data, use_container_width=True)
+else:
+    st.error("System failed to retrieve data from the FPL API.")
