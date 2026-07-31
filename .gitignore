@@ -1,0 +1,31 @@
+# Lingkungan Virtual Python
+venv/
+env/
+.env
+
+# Direktori Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pangkalan Data Lokal & Format Penyimpanan
+data/
+*.parquet
+*.csv
+*.json
+*.sqlite3
+
+# Model Machine Learning & Binary
+models/
+*.pkl
+*.joblib
+*.h5
+
+# Berkas Konfigurasi Editor (Sublime Text / VSCode)
+*.sublime-workspace
+*.sublime-project
+.vscode/
+
+# Berkas Sistem Operasi Linux/Mac/Windows
+.DS_Store
+Thumbs.db
