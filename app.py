@@ -17,7 +17,6 @@ if not raw_data.empty:
     display_data = raw_data[['first_name', 'second_name', 'team_name', 'position_name', 'now_cost', 'total_points']].copy()
     display_data['now_cost'] = display_data['now_cost'] / 10.0
     
-    # Komputasi metrik efisiensi (Total Poin dibagi Harga)
     display_data['value'] = (display_data['total_points'] / display_data['now_cost']).round(2)
     
     display_data.rename(columns={
@@ -43,12 +42,24 @@ if not raw_data.empty:
         (display_data['Position'].isin(selected_positions))
     ]
     
+    st.subheader("Top 5 Efficient Players (Value for Money)")
+    top_value_players = filtered_data.nlargest(5, 'Value (Pts/Cost)')
+    
+    metric_cols = st.columns(5)
+    for col, (_, player) in zip(metric_cols, top_value_players.iterrows()):
+        player_name = f"{player['First Name'][0]}. {player['Last Name']}"
+        col.metric(
+            label=player_name,
+            value=f"{player['Value (Pts/Cost)']}",
+            delta=f"{player['Total Points']} Pts | £{player['Cost']}M",
+            delta_color="off"
+        )
+    
     st.subheader(f"Live Player Metrics ({len(filtered_data)} Players)")
     st.dataframe(filtered_data, use_container_width=True)
     
     st.subheader("Cost vs Total Points Analysis")
     
-    # Perenderan visualisasi data spasial (Scatter Plot)
     scatter_chart = alt.Chart(filtered_data).mark_circle(size=60).encode(
         x=alt.X('Cost', scale=alt.Scale(zero=False)),
         y=alt.Y('Total Points', scale=alt.Scale(zero=False)),
