@@ -10,3 +10,13 @@ def create_scatter_plot(data: pd.DataFrame) -> alt.Chart:
     ).interactive()
     
     return scatter_chart
+
+def create_team_bar_chart(data: pd.DataFrame) -> alt.Chart:
+    bar_chart = alt.Chart(data).mark_bar().encode(
+        x=alt.X('sum(Total Points):Q', title='Accumulated Points'),
+        y=alt.Y('Team:N', sort='-x', title='Team'),
+        color=alt.Color('Team:N', legend=None),
+        tooltip=['Team', 'sum(Total Points)']
+    ).interactive()
+    
+    return bar_chart

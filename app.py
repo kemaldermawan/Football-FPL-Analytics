@@ -1,6 +1,6 @@
 import streamlit as st
 from src.fetcher import get_fpl_players
-from src.visuals import create_scatter_plot
+from src.visuals import create_scatter_plot, create_team_bar_chart
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -42,6 +42,15 @@ if not raw_data.empty:
         (display_data['Position'].isin(selected_positions))
     ]
     
+    csv_export = filtered_data.to_csv(index=False).encode('utf-8')
+    st.sidebar.markdown("---")
+    st.sidebar.download_button(
+        label="📥 Export Data to CSV",
+        data=csv_export,
+        file_name='fpl_filtered_data.csv',
+        mime='text/csv',
+    )
+    
     st.subheader("Top 5 Efficient Players (Value for Money)")
     top_value_players = filtered_data.nlargest(5, 'Value (Pts/Cost)')
     
@@ -58,10 +67,16 @@ if not raw_data.empty:
     st.subheader(f"Live Player Metrics ({len(filtered_data)} Players)")
     st.dataframe(filtered_data, use_container_width=True)
     
-    st.subheader("Cost vs Total Points Analysis")
+    st.subheader("Data Visualizations")
+    tab1, tab2 = st.tabs(["Cost vs Points (Scatter)", "Team Performance (Bar)"])
     
-    scatter_chart = create_scatter_plot(filtered_data)
-    st.altair_chart(scatter_chart, use_container_width=True)
+    with tab1:
+        scatter_chart = create_scatter_plot(filtered_data)
+        st.altair_chart(scatter_chart, use_container_width=True)
+        
+    with tab2:
+        bar_chart = create_team_bar_chart(filtered_data)
+        st.altair_chart(bar_chart, use_container_width=True)
 
 else:
     st.error("System failed to retrieve data from the FPL API.")
