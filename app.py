@@ -3,6 +3,7 @@ from src.fetcher import get_fpl_players
 from src.visuals import create_scatter_plot, create_team_bar_chart
 from src.fpl_solver import optimize_squad
 from src.tactical import draw_pass_network
+from src.predictor import generate_score_matrix, calculate_match_odds
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -69,8 +70,8 @@ if not raw_data.empty:
     st.subheader(f"Live Player Metrics ({len(filtered_data)} Players)")
     st.dataframe(filtered_data, use_container_width=True)
     
-    st.subheader("Data Visualizations & Tactical Board")
-    tab1, tab2, tab3 = st.tabs(["Cost vs Points", "Team Performance", "Tactical Pitch"])
+    st.subheader("Data Visualizations & Analytical Models")
+    tab1, tab2, tab3, tab4 = st.tabs(["Cost vs Points", "Team Performance", "Tactical Pitch", "Poisson Predictor"])
     
     with tab1:
         scatter_chart = create_scatter_plot(filtered_data)
@@ -84,6 +85,24 @@ if not raw_data.empty:
         st.info("Displaying spatial event data mapping using mplsoccer.")
         tactical_fig = draw_pass_network()
         st.pyplot(tactical_fig)
+        
+    with tab4:
+        st.markdown("### Poisson Match Simulator")
+        col1, col2 = st.columns(2)
+        home_xg = col1.slider("Home Team Expected Goals (xG)", 0.1, 4.0, 1.5, 0.1)
+        away_xg = col2.slider("Away Team Expected Goals (xG)", 0.1, 4.0, 1.2, 0.1)
+        
+        score_matrix = generate_score_matrix(home_xg, away_xg)
+        home_win, draw, away_win = calculate_match_odds(score_matrix)
+        
+        st.markdown("#### Match Outcome Probabilities")
+        m_col1, m_col2, m_col3 = st.columns(3)
+        m_col1.metric("Home Win", f"{home_win * 100:.1f}%")
+        m_col2.metric("Draw", f"{draw * 100:.1f}%")
+        m_col3.metric("Away Win", f"{away_win * 100:.1f}%")
+        
+        st.markdown("#### Exact Score Probability Matrix")
+        st.dataframe(score_matrix.style.background_gradient(cmap='YlGn', axis=None).format("{:.2%}"), use_container_width=True)
 
     st.markdown("---")
     st.subheader("Operations Research: MILP Squad Optimizer")
