@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import poisson
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
 def generate_score_matrix(home_xg: float, away_xg: float, max_goals: int = 5) -> pd.DataFrame:
     home_probs = [poisson.pmf(i, home_xg) for i in range(max_goals + 1)]
@@ -21,3 +23,22 @@ def calculate_match_odds(score_matrix: pd.DataFrame) -> tuple:
     away_win = np.triu(matrix_vals, 1).sum()
     
     return home_win, draw, away_win
+
+def find_similar_players(df: pd.DataFrame, target_name: str, n_clusters: int = 8) -> pd.DataFrame:
+    features = ['Cost', 'Total Points', 'Value (Pts/Cost)']
+    ml_data = df.dropna(subset=features).copy()
+    
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(ml_data[features])
+    
+    # Pembatasan max_iter untuk optimasi kinerja pada spesifikasi perangkat keras entri
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10, max_iter=100)
+    ml_data['Cluster'] = kmeans.fit_predict(scaled_features)
+    
+    if target_name not in ml_data['Last Name'].values:
+        return pd.DataFrame()
+        
+    target_cluster = ml_data[ml_data['Last Name'] == target_name]['Cluster'].values[0]
+    similar_players = ml_data[ml_data['Cluster'] == target_cluster]
+    
+    return similar_players[similar_players['Last Name'] != target_name].nlargest(5, 'Total Points')

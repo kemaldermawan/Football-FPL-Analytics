@@ -10,12 +10,22 @@ def update_fpl_data():
     
     if response.status_code == 200:
         data = response.json()
-        players_df = pd.DataFrame(data['elements'])
         
-        clean_df = players_df[['first_name', 'second_name', 'team', 'element_type', 'now_cost', 'total_points']].copy()
+        players_df = pd.DataFrame(data['elements'])
+        teams_df = pd.DataFrame(data['teams'])
+        positions_df = pd.DataFrame(data['element_types'])
+        
+        team_mapping = dict(zip(teams_df['id'], teams_df['name']))
+        players_df['team_name'] = players_df['team'].map(team_mapping)
+        
+        pos_mapping = dict(zip(positions_df['id'], positions_df['singular_name_short']))
+        players_df['position_name'] = players_df['element_type'].map(pos_mapping)
+        
+        clean_df = players_df[['first_name', 'second_name', 'team_name', 'position_name', 'now_cost', 'total_points']].copy()
+        
         output_path = os.path.join('data', 'fpl_static.parquet')
         clean_df.to_parquet(output_path, engine='pyarrow', index=False)
-        print(f"FPL data serialized to {output_path}")
+        print(f"FPL data correctly mapped and serialized to {output_path}")
     else:
         print(f"Failed to fetch FPL data. HTTP Error {response.status_code}")
 

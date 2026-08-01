@@ -3,7 +3,7 @@ from src.fetcher import get_fpl_players
 from src.visuals import create_scatter_plot, create_team_bar_chart
 from src.fpl_solver import optimize_squad
 from src.tactical import draw_pass_network
-from src.predictor import generate_score_matrix, calculate_match_odds
+from src.predictor import generate_score_matrix, calculate_match_odds, find_similar_players
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -71,7 +71,7 @@ if not raw_data.empty:
     st.dataframe(filtered_data, use_container_width=True)
     
     st.subheader("Data Visualizations & Analytical Models")
-    tab1, tab2, tab3, tab4 = st.tabs(["Cost vs Points", "Team Performance", "Tactical Pitch", "Poisson Predictor"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Cost vs Points", "Team", "Tactical Pitch", "Poisson Predictor", "ML Scouting"])
     
     with tab1:
         scatter_chart = create_scatter_plot(filtered_data)
@@ -100,9 +100,21 @@ if not raw_data.empty:
         m_col1.metric("Home Win", f"{home_win * 100:.1f}%")
         m_col2.metric("Draw", f"{draw * 100:.1f}%")
         m_col3.metric("Away Win", f"{away_win * 100:.1f}%")
-        
-        st.markdown("#### Exact Score Probability Matrix")
         st.dataframe(score_matrix.style.background_gradient(cmap='YlGn', axis=None).format("{:.2%}"), use_container_width=True)
+
+    with tab5:
+        st.markdown("### K-Means Similarity Search")
+        player_list = sorted(filtered_data['Last Name'].dropna().unique())
+        target_player = st.selectbox("Select Target Player", player_list)
+        
+        if st.button("Find Similar Players"):
+            with st.spinner("Running unsupervised clustering..."):
+                similar_df = find_similar_players(filtered_data, target_player)
+                if not similar_df.empty:
+                    st.success(f"Top 5 players with similar statistical profiles to {target_player}")
+                    st.dataframe(similar_df[['First Name', 'Last Name', 'Team', 'Position', 'Cost', 'Total Points', 'Value (Pts/Cost)']], use_container_width=True)
+                else:
+                    st.warning("Player data insufficient for statistical clustering.")
 
     st.markdown("---")
     st.subheader("Operations Research: MILP Squad Optimizer")
