@@ -1,19 +1,31 @@
 import matplotlib.pyplot as plt
 from mplsoccer import Pitch
+import pandas as pd
+import os
 
 def draw_pass_network():
+    file_path = os.path.join('data', 'epl_raw.parquet')
+    if not os.path.exists(file_path):
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, 'Data not found', ha='center', va='center')
+        return fig
+        
+    shots_df = pd.read_parquet(file_path, engine='pyarrow')
+    
+    shots_df['X'] = shots_df['X'] * 120
+    shots_df['Y'] = shots_df['Y'] * 80
+    
     pitch = Pitch(pitch_type='statsbomb', pitch_color='#22312b', line_color='#c7d5cc')
     fig, ax = pitch.draw(figsize=(8, 5))
     
-    x_coords = [10, 30, 30, 30, 30, 50, 50, 50, 70, 70, 70]
-    y_coords = [40, 20, 60, 40, 80, 40, 20, 60, 40, 20, 60]
+    goals = shots_df[shots_df['result'] == 'Goal']
+    misses = shots_df[shots_df['result'] != 'Goal']
     
-    pitch.scatter(x_coords, y_coords, ax=ax, s=250, color='#ea6969', edgecolors='black', zorder=2)
+    pitch.scatter(misses['X'], misses['Y'], ax=ax, s=100, color='#ea6969', edgecolors='black', alpha=0.6, label='Miss')
+    pitch.scatter(goals['X'], goals['Y'], ax=ax, s=200, color='#69ea82', edgecolors='black', zorder=2, label='Goal')
     
-    pitch.lines(x_coords[0], y_coords[0], x_coords[3], y_coords[3], ax=ax, lw=2, color='white', zorder=1, alpha=0.7)
-    pitch.lines(x_coords[3], y_coords[3], x_coords[5], y_coords[5], ax=ax, lw=3, color='white', zorder=1, alpha=0.8)
-    
-    ax.set_title("Tactical Spatial Analysis (Simulation)", color='white', fontsize=14)
+    ax.set_title("Tactical Spatial Analysis (Actual Shots Data)", color='white', fontsize=14)
+    ax.legend(loc='lower left')
     fig.patch.set_facecolor('#22312b')
     
     return fig
