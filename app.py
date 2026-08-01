@@ -1,9 +1,9 @@
 import streamlit as st
 from src.fetcher import get_fpl_players
-from src.visuals import create_scatter_plot, create_team_bar_chart
-from src.fpl_solver import optimize_squad
+from src.visuals import create_scatter_plot, create_team_bar_chart, create_pizza_chart
+from src.fpl_solver import optimize_squad, fetch_manager_squad
 from src.tactical import draw_pass_network
-from src.predictor import generate_score_matrix, calculate_match_odds, find_similar_players
+from src.predictor import generate_score_matrix, calculate_match_odds, find_similar_players, run_monte_carlo
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -87,51 +87,76 @@ if not raw_data.empty:
         st.pyplot(tactical_fig)
         
     with tab4:
-        st.markdown("### Poisson Match Simulator")
+        st.markdown("### Match Simulator (Poisson & Monte Carlo)")
         col1, col2 = st.columns(2)
         home_xg = col1.slider("Home Team Expected Goals (xG)", 0.1, 4.0, 1.5, 0.1)
         away_xg = col2.slider("Away Team Expected Goals (xG)", 0.1, 4.0, 1.2, 0.1)
         
         score_matrix = generate_score_matrix(home_xg, away_xg)
-        home_win, draw, away_win = calculate_match_odds(score_matrix)
+        mc_home, mc_draw, mc_away = run_monte_carlo(home_xg, away_xg, 10000)
         
-        st.markdown("#### Match Outcome Probabilities")
+        st.markdown("#### 10,000x Monte Carlo Stable Probabilities")
         m_col1, m_col2, m_col3 = st.columns(3)
-        m_col1.metric("Home Win", f"{home_win * 100:.1f}%")
-        m_col2.metric("Draw", f"{draw * 100:.1f}%")
-        m_col3.metric("Away Win", f"{away_win * 100:.1f}%")
+        m_col1.metric("Home Win", f"{mc_home * 100:.1f}%")
+        m_col2.metric("Draw", f"{mc_draw * 100:.1f}%")
+        m_col3.metric("Away Win", f"{mc_away * 100:.1f}%")
+        
+        st.markdown("#### Exact Score Probability Matrix")
         st.dataframe(score_matrix.style.background_gradient(cmap='YlGn', axis=None).format("{:.2%}"), use_container_width=True)
 
     with tab5:
-        st.markdown("### K-Means Similarity Search")
+        st.markdown("### Pro Scouting: K-Means & Percentile Radar")
         player_list = sorted(filtered_data['Last Name'].dropna().unique())
         target_player = st.selectbox("Select Target Player", player_list)
         
-        if st.button("Find Similar Players"):
-            with st.spinner("Running unsupervised clustering..."):
-                similar_df = find_similar_players(filtered_data, target_player)
-                if not similar_df.empty:
-                    st.success(f"Top 5 players with similar statistical profiles to {target_player}")
-                    st.dataframe(similar_df[['First Name', 'Last Name', 'Team', 'Position', 'Cost', 'Total Points', 'Value (Pts/Cost)']], use_container_width=True)
-                else:
-                    st.warning("Player data insufficient for statistical clustering.")
+        target_series = filtered_data[filtered_data['Last Name'] == target_player].iloc[0]
+        pos_population = filtered_data[filtered_data['Position'] == target_series['Position']]
+        
+        col_radar, col_similar = st.columns([1, 1])
+        
+        with col_radar:
+            radar_fig = create_pizza_chart(target_series, pos_population)
+            st.pyplot(radar_fig)
+            
+        with col_similar:
+            st.markdown(f"**Similar Statistical Profiles (K-Means)**")
+            similar_df = find_similar_players(filtered_data, target_player)
+            if not similar_df.empty:
+                st.dataframe(similar_df[['First Name', 'Last Name', 'Cost', 'Total Points']], use_container_width=True)
+            else:
+                st.warning("Insufficient data for clustering.")
 
     st.markdown("---")
-    st.subheader("Operations Research: MILP Squad Optimizer")
-    st.info("Execute the deterministic PuLP solver to generate the mathematically optimal 15-man squad under strict FPL budget and quota constraints.")
+    st.subheader("Operations Research: MILP Squad Optimizer & Sync")
+    st.info("Execute deterministic PuLP solver and synchronize live manager squad via FPL API.")
     
-    if st.button("Generate Optimal Squad"):
-        with st.spinner("Calculating optimal integer combinations..."):
-            optimal_squad = optimize_squad(display_data, budget=100.0)
-            
-            st.success("Mathematical optimization complete.")
-            st.dataframe(optimal_squad, use_container_width=True)
-            
-            total_cost = optimal_squad['Cost'].sum()
-            total_pts = optimal_squad['Total Points'].sum()
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Squad Expected Total Points", f"{total_pts} Pts")
-            col2.metric("Total Budget Utilized", f"£{total_cost:.1f}M")
+    col_opt, col_sync = st.columns(2)
+    
+    with col_opt:
+        if st.button("Generate Mathematically Optimal Squad"):
+            with st.spinner("Calculating optimal integer combinations..."):
+                optimal_squad = optimize_squad(display_data, budget=100.0)
+                st.success("Mathematical optimization complete.")
+                st.dataframe(optimal_squad, use_container_width=True)
+                
+                total_cost = optimal_squad['Cost'].sum()
+                total_pts = optimal_squad['Total Points'].sum()
+                st.metric("Expected Points & Budget", f"{total_pts} Pts", f"£{total_cost:.1f}M Utilized")
+
+    with col_sync:
+        fpl_team_id = st.text_input("Enter FPL Team ID (e.g., 123456)")
+        if st.button("Sync Current Squad"):
+            if fpl_team_id:
+                with st.spinner("Fetching live data from FPL servers..."):
+                    squad_ids = fetch_manager_squad(fpl_team_id)
+                    if squad_ids:
+                        my_squad = raw_data[raw_data['id'].isin(squad_ids)].copy()
+                        my_squad = my_squad[['first_name', 'second_name', 'team_name', 'position_name', 'now_cost', 'total_points']]
+                        st.success("Squad synchronized successfully.")
+                        st.dataframe(my_squad, use_container_width=True)
+                    else:
+                        st.error("Invalid Team ID or API rate limit exceeded.")
+            else:
+                st.warning("Team ID is strictly required.")
 else:
     st.error("System failed to retrieve data from the FPL API.")

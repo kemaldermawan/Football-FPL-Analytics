@@ -31,7 +31,6 @@ def find_similar_players(df: pd.DataFrame, target_name: str, n_clusters: int = 8
     scaler = StandardScaler()
     scaled_features = scaler.fit_transform(ml_data[features])
     
-    # Pembatasan max_iter untuk optimasi kinerja pada spesifikasi perangkat keras entri
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10, max_iter=100)
     ml_data['Cluster'] = kmeans.fit_predict(scaled_features)
     
@@ -42,3 +41,15 @@ def find_similar_players(df: pd.DataFrame, target_name: str, n_clusters: int = 8
     similar_players = ml_data[ml_data['Cluster'] == target_cluster]
     
     return similar_players[similar_players['Last Name'] != target_name].nlargest(5, 'Total Points')
+
+def run_monte_carlo(home_xg: float, away_xg: float, iterations: int = 10000) -> tuple:
+    np.random.seed(42)
+    
+    home_sim = np.random.poisson(home_xg, iterations)
+    away_sim = np.random.poisson(away_xg, iterations)
+    
+    home_wins = np.sum(home_sim > away_sim)
+    draws = np.sum(home_sim == away_sim)
+    away_wins = np.sum(home_sim < away_sim)
+    
+    return home_wins / iterations, draws / iterations, away_wins / iterations
