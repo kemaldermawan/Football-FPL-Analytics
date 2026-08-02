@@ -1,9 +1,11 @@
 import streamlit as st
+import pandas as pd
 from src.fetcher import get_fpl_players
 from src.visuals import create_scatter_plot, create_team_bar_chart, create_pizza_chart
-from src.fpl_solver import optimize_squad, fetch_manager_squad
 from src.tactical import draw_pass_network
 from src.predictor import generate_score_matrix, calculate_match_odds, find_similar_players, run_monte_carlo
+from src.analytics_engine import load_advanced_metrics, generate_predicted_lineup, plot_tactical_quadrant, identify_key_playmakers
+from src.fpl_solver import optimize_squad, fetch_manager_squad, evaluate_chip_strategy
 
 st.set_page_config(
     page_title="FPL Analytics",
@@ -70,9 +72,16 @@ if not raw_data.empty:
     st.subheader(f"Live Player Metrics ({len(filtered_data)} Players)")
     st.dataframe(filtered_data, use_container_width=True)
     
-    st.subheader("Data Visualizations & Analytical Models")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Cost vs Points", "Team", "Tactical Pitch", "Poisson Predictor", "ML Scouting"])
-    
+    st.subheader("Professional Football Analytics Hub")
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Cost vs Points", 
+        "Team", 
+        "Tactical Pitch", 
+        "Poisson Predictor", 
+        "ML Scouting", 
+        "Pro Analytics & Lineups"
+    ])
+
     with tab1:
         scatter_chart = create_scatter_plot(filtered_data)
         st.altair_chart(scatter_chart, use_container_width=True)
@@ -125,6 +134,36 @@ if not raw_data.empty:
                 st.dataframe(similar_df[['First Name', 'Last Name', 'Cost', 'Total Points']], use_container_width=True)
             else:
                 st.warning("Insufficient data for clustering.")
+    
+    with tab6:
+        st.markdown("### Advanced FBref Tactical Engine")
+        st.info("Comprehensive multi-league metrics for Premier League and UEFA Champions League.")
+        
+        adv_data = load_advanced_metrics()
+        
+        if not adv_data.empty:
+            team_list = sorted(adv_data['Team'].dropna().unique())
+            selected_team = st.selectbox("Select Club for Tactical Deconstruction", team_list)
+            
+            col_lineup, col_playmaker = st.columns(2)
+            
+            with col_lineup:
+                st.markdown(f"#### Projected Starting XI")
+                lineup_df = generate_predicted_lineup(adv_data, selected_team)
+                st.dataframe(lineup_df, use_container_width=True)
+                
+            with col_playmaker:
+                st.markdown(f"#### Key Playmakers (xT & xA Index)")
+                playmakers_df = identify_key_playmakers(adv_data, selected_team)
+                st.dataframe(playmakers_df, use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("#### Tactical Style Matrix")
+            st.info("Top Right quadrant identifies High Possession & High Threat teams.")
+            tactical_matrix_fig = plot_tactical_quadrant(adv_data)
+            st.pyplot(tactical_matrix_fig)
+        else:
+            st.warning("Advanced metrics database not found. Please run the ETL pipeline.")
 
     st.markdown("---")
     st.subheader("Operations Research: MILP Squad Optimizer & Sync")

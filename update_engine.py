@@ -21,8 +21,8 @@ def update_fpl_data():
         pos_mapping = dict(zip(positions_df['id'], positions_df['singular_name_short']))
         players_df['position_name'] = players_df['element_type'].map(pos_mapping)
         
-        clean_df = players_df[['first_name', 'second_name', 'team_name', 'position_name', 'now_cost', 'total_points']].copy()
-        
+        clean_df = players_df[['id', 'first_name', 'second_name', 'team_name', 'position_name', 'now_cost', 'total_points', 'ep_next', 'form']].copy()
+
         output_path = os.path.join('data', 'fpl_static.parquet')
         clean_df.to_parquet(output_path, engine='pyarrow', index=False)
         print(f"FPL data correctly mapped and serialized to {output_path}")
@@ -40,6 +40,25 @@ def update_event_data():
     arsenal_shots.to_parquet(output_path, engine='pyarrow', index=False)
     print(f"Spatial event data serialized to {output_path}")
 
+def update_advanced_fbref_data():
+    print("Initiating full-scale data extraction from FBref (EPL)...")
+    
+    fbref = sd.FBref(leagues="ENG-Premier League", seasons="2023")
+    
+    standard_df = fbref.read_player_season_stats(stat_type="standard").reset_index()
+    shooting_df = fbref.read_player_season_stats(stat_type="shooting").reset_index()
+    misc_df = fbref.read_player_season_stats(stat_type="misc").reset_index()
+    
+    advanced_stats = standard_df.merge(shooting_df, on=['league', 'season', 'team', 'player'], how='left')
+    advanced_stats = advanced_stats.merge(misc_df, on=['league', 'season', 'team', 'player'], how='left')
+    
+    advanced_stats.columns = ['_'.join(col).strip() if isinstance(col, tuple) else str(col) for col in advanced_stats.columns]
+    
+    output_path = os.path.join('data', 'advanced_fbref_stats.parquet')
+    advanced_stats.to_parquet(output_path, engine='pyarrow', index=False)
+    print(f"Professional grade metrics serialized to {output_path}")
+
 if __name__ == "__main__":
     update_fpl_data()
     update_event_data()
+    update_advanced_fbref_data()
