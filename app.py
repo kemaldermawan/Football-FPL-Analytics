@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import altair as alt
 
-from src.fetcher import get_fpl_players, get_team_rolling_form, get_fpl_team_strengths, get_next_opponent, get_season_status
+from src.fetcher import get_fpl_players, get_team_rolling_form, get_fpl_team_strengths, get_next_opponent, get_fixture_run, get_season_status
 from src.visuals import create_scatter_plot, create_team_bar_chart, create_pizza_chart, create_xpts_vs_cost_chart
 from src.tactical import draw_pass_network
 from src.predictor import (
@@ -94,7 +94,8 @@ if app_module == "FPL Decision Engine":
         display_data = raw_data[[
             "id", "first_name", "second_name", "team_name", "position_name",
             "now_cost", "total_points", "ep_next", "minutes", "status",
-            "chance_of_playing_next_round",
+            "chance_of_playing_next_round", "cost_change_event", "cost_change_start",
+            "selected_by_percent", "transfers_in_event", "transfers_out_event",
         ]].copy()
         display_data["now_cost"] = display_data["now_cost"] / 10.0
         display_data["value"] = (display_data["total_points"] / display_data["now_cost"].replace(0, np.nan)).round(2)
@@ -105,6 +106,8 @@ if app_module == "FPL Decision Engine":
             "now_cost": "Cost", "total_points": "Total Points",
             "value": "Value (Pts/Cost)", "minutes": "Minutes",
             "chance_of_playing_next_round": "Chance_of_Playing",
+            "cost_change_event": "Price_Change_GW", "cost_change_start": "Price_Change_Season",
+            "selected_by_percent": "Ownership_Pct",
         }, inplace=True)
 
         STATUS_LABELS = {
@@ -113,6 +116,13 @@ if app_module == "FPL Decision Engine":
         }
         display_data["Availability"] = display_data["status"].map(STATUS_LABELS).fillna("Unknown")
         display_data["Chance_of_Playing"] = pd.to_numeric(display_data["Chance_of_Playing"], errors="coerce")
+        display_data["Ownership_Pct"] = pd.to_numeric(display_data["Ownership_Pct"], errors="coerce")
+        display_data["Price_Change_GW"] = display_data["Price_Change_GW"] / 10.0
+        display_data["Price_Change_Season"] = display_data["Price_Change_Season"] / 10.0
+        display_data["Net_Transfers_GW"] = (
+            pd.to_numeric(display_data["transfers_in_event"], errors="coerce").fillna(0)
+            - pd.to_numeric(display_data["transfers_out_event"], errors="coerce").fillna(0)
+        ).astype(int)
 
         st.sidebar.header("FPL Control Parameters")
         teams_list = sorted(display_data["Team"].dropna().unique())
@@ -124,6 +134,10 @@ if app_module == "FPL Decision Engine":
         filtered_data = display_data[
             display_data["Team"].isin(selected_teams) & display_data["Position"].isin(selected_positions)
         ]
+
+        fixture_run_df = get_fixture_run()
+        if not fixture_run_df.empty:
+            filtered_data = filtered_data.merge(fixture_run_df, on="Team", how="left")
 
         csv_export = filtered_data.to_csv(index=False).encode("utf-8")
         st.sidebar.download_button(
@@ -142,7 +156,9 @@ if app_module == "FPL Decision Engine":
             st.caption(
                 "Ranked per position, restricted to available players who clear a minimum "
                 "minutes threshold — a raw Pts/Cost ratio without these filters rewards small "
-                "sample-size flukes (e.g. one big haul from a rarely-used player)."
+                "sample-size flukes (e.g. one big haul from a rarely-used player). Value itself "
+                "is still purely Points/Cost — fixture difficulty below is a separate filter, "
+                "shown transparently rather than blended into the ranking number."
             )
 
             col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1.2, 1, 1])
@@ -161,9 +177,23 @@ if app_module == "FPL Decision Engine":
                          "forward-looking ep_next estimate — better for 'who to buy now'.",
                 )
 
+            if "Avg_FDR" in filtered_data.columns:
+                max_fdr = st.slider(
+                    "Max acceptable average fixture difficulty (next 5 GWs)",
+                    min_value=1.0, max_value=5.0, value=5.0, step=0.5,
+                    help="FPL's own official FDR: 1 = easiest run of fixtures, 5 = hardest. "
+                         "Leave at 5.0 to not filter by fixtures at all. Lower it to exclude "
+                         "teams facing a brutal run — e.g. good value now, but a tough month ahead.",
+                )
+            else:
+                max_fdr = None
+                st.caption("Fixture-run data not found — run `python update_engine.py` to enable the difficulty filter.")
+
             eligible = filtered_data[filtered_data["Minutes"] >= min_minutes].copy()
             if only_available:
                 eligible = eligible[eligible["Availability"] == "Available"]
+            if max_fdr is not None:
+                eligible = eligible[eligible["Avg_FDR"].fillna(max_fdr) <= max_fdr]
 
             if rank_basis.startswith("Historical"):
                 eligible["Value (Pts/Cost)"] = (eligible["Total Points"] / eligible["Cost"].replace(0, np.nan)).round(2)
@@ -176,28 +206,56 @@ if app_module == "FPL Decision Engine":
             if eligible.empty:
                 st.warning("No players meet the current filters — try lowering the minutes threshold.")
             else:
-                st.markdown("#### Top 3 Value Picks per Position")
+                POSITION_SQUAD_SLOTS = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
+
+                col_n, col_note = st.columns([1, 2])
+                with col_n:
+                    picks_per_position = st.slider(
+                        "Value picks to show per position", min_value=3, max_value=15, value=6,
+                        help="FPL squad quotas are 2 GKP / 5 DEF / 5 MID / 3 FWD — showing more than "
+                             "the quota gives you backup options in case your first choice gets "
+                             "injured, priced out, or you want to compare alternatives.",
+                    )
+                with col_note:
+                    st.caption(
+                        f"Squad quota for reference: {POSITION_SQUAD_SLOTS['GKP']} GKP · "
+                        f"{POSITION_SQUAD_SLOTS['DEF']} DEF · {POSITION_SQUAD_SLOTS['MID']} MID · "
+                        f"{POSITION_SQUAD_SLOTS['FWD']} FWD (15 total)."
+                    )
+
+                st.markdown(f"#### Top {picks_per_position} Value Picks per Position")
                 position_tabs = st.tabs(["GKP", "DEF", "MID", "FWD"])
                 for pos, pos_tab in zip(["GKP", "DEF", "MID", "FWD"], position_tabs):
                     with pos_tab:
-                        pos_players = eligible[eligible["Position"] == pos].nlargest(3, "Value (Pts/Cost)")
+                        pos_players = eligible[eligible["Position"] == pos].nlargest(
+                            picks_per_position, "Value (Pts/Cost)"
+                        )
                         if pos_players.empty:
                             st.info("No qualifying players at this position under the current filters.")
                             continue
 
-                        metric_cols = st.columns(len(pos_players))
-                        for col, (_, player) in zip(metric_cols, pos_players.iterrows()):
-                            player_name = f"{player['First Name'][0]}. {player['Last Name']}"
-                            chance = player.get("Chance_of_Playing")
-                            chance_note = (
-                                f" | {int(chance)}% chance to play" if pd.notna(chance) else ""
-                            )
-                            col.metric(
-                                label=f"{player_name} ({player['Team']})",
-                                value=f"{player['Value (Pts/Cost)']} pts/£M",
-                                delta=f"{player[rank_metric]:.1f} {rank_metric} | £{player['Cost']}M | {int(player['Minutes'])} min{chance_note}",
-                                delta_color="off",
-                            )
+                        st.caption(f"{len(pos_players)} shown · squad quota: {POSITION_SQUAD_SLOTS[pos]}")
+
+                        # Lay cards out in rows of 4 so the slider can go well past 3-4 without
+                        # squeezing every metric card into one unreadably narrow row.
+                        players_list = list(pos_players.iterrows())
+                        for row_start in range(0, len(players_list), 4):
+                            row_players = players_list[row_start:row_start + 4]
+                            metric_cols = st.columns(len(row_players))
+                            for col, (_, player) in zip(metric_cols, row_players):
+                                player_name = f"{player['First Name'][0]}. {player['Last Name']}"
+                                chance = player.get("Chance_of_Playing")
+                                chance_note = (
+                                    f" | {int(chance)}% chance to play" if pd.notna(chance) else ""
+                                )
+                                fdr_val = player.get("Avg_FDR")
+                                fdr_note = f" | Next-5 FDR {fdr_val:.1f}" if pd.notna(fdr_val) else ""
+                                col.metric(
+                                    label=f"{player_name} ({player['Team']})",
+                                    value=f"{player['Value (Pts/Cost)']} pts/£M",
+                                    delta=f"{player[rank_metric]:.1f} {rank_metric} | £{player['Cost']}M | {int(player['Minutes'])} min{chance_note}{fdr_note}",
+                                    delta_color="off",
+                                )
 
                 st.markdown("#### Value Comparison — Top 8 Overall")
                 top_overall = eligible.nlargest(8, "Value (Pts/Cost)")
@@ -218,12 +276,25 @@ if app_module == "FPL Decision Engine":
             table_data = eligible if sync_filters and not eligible.empty else filtered_data
 
             st.subheader(f"Live Player Metrics ({len(table_data)} Players)")
+            table_cols = [
+                "First Name", "Last Name", "Team", "Position", "Cost",
+                "Total Points", "ep_next", "Minutes", "Availability",
+                "Chance_of_Playing", "Value (Pts/Cost)",
+                "Ownership_Pct", "Price_Change_GW", "Price_Change_Season", "Net_Transfers_GW",
+            ]
+            if "Avg_FDR" in table_data.columns:
+                table_cols += ["Avg_FDR", "Fixture_Run"]
+
             st.dataframe(
-                table_data[[
-                    "First Name", "Last Name", "Team", "Position", "Cost",
-                    "Total Points", "ep_next", "Minutes", "Availability",
-                    "Chance_of_Playing", "Value (Pts/Cost)",
-                ]].rename(columns={"Chance_of_Playing": "Chance to Play (%)"}),
+                table_data[table_cols].rename(columns={
+                    "Chance_of_Playing": "Chance to Play (%)",
+                    "Avg_FDR": "Next-5 FDR",
+                    "Fixture_Run": "Upcoming Fixtures",
+                    "Ownership_Pct": "Ownership (%)",
+                    "Price_Change_GW": "Price Δ This GW (£M)",
+                    "Price_Change_Season": "Price Δ Season (£M)",
+                    "Net_Transfers_GW": "Net Transfers This GW",
+                }),
                 use_container_width=True,
             )
 
@@ -241,6 +312,15 @@ if app_module == "FPL Decision Engine":
                 "Fixture Difficulty (FDR, from FPL's own team strength ratings), rotation risk from "
                 "European fixtures, actual-vs-expected conversion ratio, and projected minutes (xMins)."
             )
+
+            if season_info.get("season_status") == "PRE_SEASON":
+                st.error(
+                    "🚧 **This model is not meaningful right now.** The season hasn't started, so "
+                    "the xG, goals, assists, and minutes feeding this projection are all leftover "
+                    "values from last season carried over by the FPL API. Custom_xPts below is "
+                    "arithmetically correct but reflects last season's form, not this one. Re-run "
+                    "`update_engine.py` once gameweek 1 has kicked off for a meaningful projection."
+                )
 
             team_strengths_df = get_fpl_team_strengths()
             next_opponent_df = get_next_opponent()
@@ -296,7 +376,9 @@ if app_module == "FPL Decision Engine":
                 xpts_data, opponent_defense_map=opponent_defense_map,
                 european_fixture_teams=european_teams,
             )
-            top_custom = custom_result.nlargest(15, "Custom_xPts")[
+
+            top_n = st.slider("How many players to show", min_value=5, max_value=50, value=15, step=5)
+            top_custom = custom_result.nlargest(top_n, "Custom_xPts")[
                 ["Player", "Team", "Position", "Cost", "Opponent", "Custom_xPts", "ep_next",
                  "FDR_Multiplier", "Rotation_Multiplier", "xMins_Factor"]
             ]

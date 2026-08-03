@@ -7,7 +7,7 @@ import os
 import json
 import pandas as pd
 
-from src.config import PATH_FPL_STATIC, PATH_TEAM_FORM, PATH_FPL_TEAMS, PATH_NEXT_OPPONENT, PATH_SEASON_STATUS
+from src.config import PATH_FPL_STATIC, PATH_TEAM_FORM, PATH_FPL_TEAMS, PATH_NEXT_OPPONENT, PATH_FIXTURE_RUN, PATH_SEASON_STATUS
 
 try:
     import streamlit as st
@@ -51,6 +51,15 @@ def get_next_opponent() -> pd.DataFrame:
     derived from the fixtures endpoint by update_engine.py."""
     if os.path.exists(PATH_NEXT_OPPONENT):
         return pd.read_parquet(PATH_NEXT_OPPONENT, engine="pyarrow")
+    return pd.DataFrame()
+
+
+@_cache
+def get_fixture_run() -> pd.DataFrame:
+    """Load each team's average official FDR (1=easiest, 5=hardest) over
+    their next 5 unplayed fixtures, plus a readable list of opponents."""
+    if os.path.exists(PATH_FIXTURE_RUN):
+        return pd.read_parquet(PATH_FIXTURE_RUN, engine="pyarrow")
     return pd.DataFrame()
 
 
