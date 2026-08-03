@@ -276,26 +276,61 @@ if app_module == "FPL Decision Engine":
             table_data = eligible if sync_filters and not eligible.empty else filtered_data
 
             st.subheader(f"Live Player Metrics ({len(table_data)} Players)")
-            table_cols = [
+
+            show_advanced = st.checkbox(
+                "Show advanced columns (price trend, net transfers, upcoming fixtures list)",
+                value=False,
+                help="Keeps the table focused on the columns most people scan first; tick this for the full picture.",
+            )
+
+            # Sorted by Value by default so the most relevant players surface
+            # immediately instead of an arbitrary (usually ID-based) row order.
+            table_sorted = table_data.sort_values("Value (Pts/Cost)", ascending=False).copy()
+
+            core_cols = [
                 "First Name", "Last Name", "Team", "Position", "Cost",
-                "Total Points", "ep_next", "Minutes", "Availability",
-                "Chance_of_Playing", "Value (Pts/Cost)",
-                "Ownership_Pct", "Price_Change_GW", "Price_Change_Season", "Net_Transfers_GW",
+                "Total Points", "ep_next", "Value (Pts/Cost)", "Ownership_Pct",
             ]
-            if "Avg_FDR" in table_data.columns:
-                table_cols += ["Avg_FDR", "Fixture_Run"]
+            if "Avg_FDR" in table_sorted.columns:
+                core_cols.append("Avg_FDR")
+
+            advanced_cols = [
+                "Minutes", "Availability", "Chance_of_Playing",
+                "Price_Change_GW", "Price_Change_Season", "Net_Transfers_GW",
+            ]
+            if "Fixture_Run" in table_sorted.columns:
+                advanced_cols.append("Fixture_Run")
+
+            display_cols = core_cols + advanced_cols if show_advanced else core_cols
 
             st.dataframe(
-                table_data[table_cols].rename(columns={
-                    "Chance_of_Playing": "Chance to Play (%)",
-                    "Avg_FDR": "Next-5 FDR",
-                    "Fixture_Run": "Upcoming Fixtures",
-                    "Ownership_Pct": "Ownership (%)",
-                    "Price_Change_GW": "Price Δ This GW (£M)",
-                    "Price_Change_Season": "Price Δ Season (£M)",
-                    "Net_Transfers_GW": "Net Transfers This GW",
-                }),
+                table_sorted[display_cols],
                 use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "First Name": st.column_config.TextColumn("First Name", width="small"),
+                    "Last Name": st.column_config.TextColumn("Last Name", width="small"),
+                    "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                    "Total Points": st.column_config.NumberColumn("Total Pts"),
+                    "ep_next": st.column_config.NumberColumn("ep_next", format="%.1f"),
+                    "Value (Pts/Cost)": st.column_config.NumberColumn(
+                        "Value (Pts/£M)", format="%.2f",
+                        help="Points per £M spent — higher is better value.",
+                    ),
+                    "Ownership_Pct": st.column_config.ProgressColumn(
+                        "Ownership %", min_value=0, max_value=100, format="%.1f%%",
+                    ),
+                    "Avg_FDR": st.column_config.ProgressColumn(
+                        "Next-5 FDR", min_value=1, max_value=5, format="%.1f",
+                        help="FPL's own difficulty rating: 1 = easiest run, 5 = hardest.",
+                    ),
+                    "Minutes": st.column_config.NumberColumn("Minutes"),
+                    "Chance_of_Playing": st.column_config.NumberColumn("Chance to Play %", format="%.0f%%"),
+                    "Price_Change_GW": st.column_config.NumberColumn("Price Δ (GW)", format="%+.1f"),
+                    "Price_Change_Season": st.column_config.NumberColumn("Price Δ (Season)", format="%+.1f"),
+                    "Net_Transfers_GW": st.column_config.NumberColumn("Net Transfers (GW)", format="%+d"),
+                    "Fixture_Run": st.column_config.TextColumn("Upcoming Fixtures", width="large"),
+                },
             )
 
             col_scatter, col_bar = st.columns(2)

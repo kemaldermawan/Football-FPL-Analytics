@@ -97,7 +97,7 @@ def update_fpl_data():
 
     # Team strength table (used for FDR) straight from FPL's own ratings
     team_strength_cols = [c for c in teams_df.columns if "strength" in c]
-    teams_df[["id", "name"] + team_strength_cols].to_parquet(
+    teams_df[["id", "name", "short_name"] + team_strength_cols].to_parquet(
         PATH_FPL_TEAMS, engine="pyarrow", index=False
     )
 
@@ -178,6 +178,7 @@ def _update_fixture_run(fixtures_df: pd.DataFrame, horizon: int = 5):
 
     teams_df = pd.read_parquet(PATH_FPL_TEAMS, engine="pyarrow")
     team_names = dict(zip(teams_df["id"], teams_df["name"]))
+    team_short_names = dict(zip(teams_df["id"], teams_df.get("short_name", teams_df["name"])))
 
     upcoming = fixtures_df[fixtures_df["finished"] == False].copy()  # noqa: E712
     upcoming = upcoming.sort_values("event", na_position="last")
@@ -197,8 +198,8 @@ def _update_fixture_run(fixtures_df: pd.DataFrame, horizon: int = 5):
             opponent_id = fx["team_a"] if is_home else fx["team_h"]
             difficulty = fx["team_h_difficulty"] if is_home else fx["team_a_difficulty"]
             difficulties.append(difficulty)
-            opp_name = team_names.get(opponent_id, "UNK")
-            opponent_labels.append(f"{opp_name}({'H' if is_home else 'A'})")
+            opp_code = team_short_names.get(opponent_id, "UNK")
+            opponent_labels.append(f"{opp_code}({'H' if is_home else 'A'})")
 
         rows.append({
             "Team": team_name,
