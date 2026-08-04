@@ -212,7 +212,7 @@ if app_module == "FPL Decision Engine":
                 col_n, col_note = st.columns([1, 2])
                 with col_n:
                     picks_per_position = st.slider(
-                        "Value picks to show per position", min_value=3, max_value=15, value=6,
+                        "Value picks to show per position", min_value=3, max_value=15, value=8,
                         help="FPL squad quotas are 2 GKP / 5 DEF / 5 MID / 3 FWD — showing more than "
                              "the quota gives you backup options in case your first choice gets "
                              "injured, priced out, or you want to compare alternatives.",
@@ -349,11 +349,15 @@ if app_module == "FPL Decision Engine":
                 },
             )
 
-            col_scatter, col_bar = st.columns(2)
-            with col_scatter:
-                st.altair_chart(create_scatter_plot(table_data), use_container_width=True)
-            with col_bar:
-                st.altair_chart(create_team_bar_chart(table_data), use_container_width=True)
+            st.markdown("---")
+            st.markdown("#### Player Value Distribution (Cost vs Points)")
+            
+            scatter_charts = create_scatter_plot(table_data)
+            for chart in scatter_charts:
+                st.altair_chart(chart, use_container_width=True)
+            
+            st.markdown("#### Accumulated Points per Team")
+            st.altair_chart(create_team_bar_chart(table_data), use_container_width=True)
 
         # --- Custom xPts Model ---
         with tab_xpts:

@@ -45,7 +45,6 @@ TEAM_COLORS = {
     "Wolves": "#FDB913",
 }
 
-
 def get_contrasting_text_color(hex_color: str) -> str:
     """Returns '#000000' or '#ffffff', whichever reads better on the
     given background, using the standard relative-luminance heuristic."""
@@ -55,7 +54,6 @@ def get_contrasting_text_color(hex_color: str) -> str:
     r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
     return "#000000" if luminance > 0.55 else "#ffffff"
-
 
 def style_team_column(df: pd.DataFrame, team_col: str = "Team"):
     """Returns a pandas Styler that colors ONLY the Team cell background
@@ -68,43 +66,75 @@ def style_team_column(df: pd.DataFrame, team_col: str = "Team"):
         return [style if col == team_col else "" for col in row.index]
     return df.style.apply(_style_row, axis=1)
 
-
 def _apply_dark_theme(chart: alt.Chart) -> alt.Chart:
     return chart.configure(background=COLOR_PITCH).configure_axis(
-        labelColor=COLOR_TEXT, titleColor=COLOR_TEXT, gridColor="#2a2f3a"
+        labelColor=COLOR_TEXT, titleColor=COLOR_TEXT, gridColor="#2a2f3a", grid=True
     ).configure_legend(labelColor=COLOR_TEXT, titleColor=COLOR_TEXT)
 
+def create_scatter_plot(data: pd.DataFrame) -> list:
+    """Cost vs Total Points scatter.
+    Returns a list of charts with strictly enforced global domains for consistency,
+    increased height to prevent cropping, and explicit detail mapping to prevent aggregation."""
+    df_chart = data.copy()
+    
+    df_chart["Ownership_Pct"] = pd.to_numeric(df_chart["Ownership_Pct"], errors="coerce").fillna(0.0)
+    df_chart["Cost"] = pd.to_numeric(df_chart["Cost"], errors="coerce").fillna(0.0)
+    df_chart["Total Points"] = pd.to_numeric(df_chart["Total Points"], errors="coerce").fillna(0.0)
 
-def create_scatter_plot(data: pd.DataFrame) -> alt.Chart:
-    """Cost vs Total Points scatter, full-width and taller — with tooltip
-    showing name, team, position so you can identify clustered dots."""
-    base = alt.Chart(data).mark_circle(opacity=0.8).encode(
-        x=alt.X("Cost:Q", scale=alt.Scale(zero=False), title="Cost (£M)"),
-        y=alt.Y("Total Points:Q", scale=alt.Scale(zero=False), title="Total Points"),
-        color=alt.Color(
-            "Position:N",
-            scale=alt.Scale(
-                domain=["GKP", "DEF", "MID", "FWD"],
-                range=POSITION_COLOR_RANGE,
+    min_cost, max_cost = df_chart["Cost"].min(), df_chart["Cost"].max()
+    min_pts, max_pts = df_chart["Total Points"].min(), df_chart["Total Points"].max()
+    
+    x_domain = [max(3.5, min_cost - 0.5), max_cost + 0.5]
+    y_domain = [min_pts - 10, max_pts + 15]
+
+    charts = []
+    for pos in ["GKP", "DEF", "MID", "FWD"]:
+        pos_data = df_chart[df_chart["Position"] == pos]
+        if pos_data.empty:
+            continue
+
+        chart = alt.Chart(pos_data).mark_circle(opacity=0.8).encode(
+            x=alt.X(
+                "Cost:Q", 
+                scale=alt.Scale(domain=x_domain, clamp=True),
+                title="Cost (£M)"
             ),
-            legend=alt.Legend(title="Position"),
-        ),
-        size=alt.Size(
-            "Ownership_Pct:Q",
-            scale=alt.Scale(range=[40, 400]),
-            legend=alt.Legend(title="Ownership %"),
-        ),
-        tooltip=[
-            alt.Tooltip("First Name:N"), alt.Tooltip("Last Name:N"),
-            alt.Tooltip("Team:N"), alt.Tooltip("Position:N"),
-            alt.Tooltip("Cost:Q", format="£.1f"),
-            alt.Tooltip("Total Points:Q"),
-            alt.Tooltip("Value (Pts/Cost):Q", format=".2f"),
-            alt.Tooltip("Ownership_Pct:Q", title="Ownership %", format=".1f"),
-        ],
-    ).properties(height=500).interactive()
-    return _apply_dark_theme(base)
+            y=alt.Y(
+                "Total Points:Q", 
+                scale=alt.Scale(domain=y_domain, clamp=True),
+                title="Total Points"
+            ),
+            color=alt.Color(
+                "Position:N",
+                scale=alt.Scale(domain=["GKP", "DEF", "MID", "FWD"], range=POSITION_COLOR_RANGE),
+                legend=None,
+            ),
+            size=alt.Size(
+                "Ownership_Pct:Q",
+                scale=alt.Scale(domain=[0, 100], range=[80, 500]),
+                legend=None,
+            ),
+            detail=[alt.Detail("First Name:N"), alt.Detail("Last Name:N"), alt.Detail("Team:N")],
+            tooltip=[
+                alt.Tooltip("First Name:N"), alt.Tooltip("Last Name:N"),
+                alt.Tooltip("Team:N"), alt.Tooltip("Position:N"),
+                alt.Tooltip("Cost:Q", format="£.1f"),
+                alt.Tooltip("Total Points:Q"),
+                alt.Tooltip("Value (Pts/Cost):Q", format=".2f"),
+                alt.Tooltip("Ownership_Pct:Q", title="Ownership %", format=".1f"),
+            ]
+        ).properties(
+            height=280,
+            title=alt.TitleParams(text=f"{pos}", color=COLOR_TEXT, anchor="start", fontSize=15, dy=-10)
+        )
+        
+        charts.append(_apply_dark_theme(chart))
 
+    if not charts:
+        empty = alt.Chart(pd.DataFrame()).mark_text().encode(text=alt.value("No data available"))
+        return [_apply_dark_theme(empty)]
+
+    return charts
 
 def create_team_bar_chart(data: pd.DataFrame) -> alt.Chart:
     """Total points accumulated per team — full-width horizontal bar,
@@ -113,7 +143,7 @@ def create_team_bar_chart(data: pd.DataFrame) -> alt.Chart:
 
     bar_chart = alt.Chart(data).mark_bar().encode(
         x=alt.X("sum(Total Points):Q", title="Accumulated Points"),
-        y=alt.Y("Team:N", sort="-x", title=None),
+        y=alt.Y("Team:N", sort="-x", title=None, axis=alt.Axis(labelOverlap=False)),
         color=alt.Color(
             "Team:N",
             scale=alt.Scale(
@@ -126,9 +156,8 @@ def create_team_bar_chart(data: pd.DataFrame) -> alt.Chart:
             alt.Tooltip("Team:N"),
             alt.Tooltip("sum(Total Points):Q", title="Total Points"),
         ],
-    ).properties(height=max(400, len(data["Team"].unique()) * 22)).interactive()
+    ).properties(height=max(550, len(data["Team"].unique()) * 30)).interactive()
     return _apply_dark_theme(bar_chart)
-
 
 def create_xpts_vs_cost_chart(data: pd.DataFrame, xpts_col: str = "Custom_xPts") -> alt.Chart:
     """Custom xPts projection vs Cost scatter for spotting undervalued players."""
@@ -152,7 +181,6 @@ def create_xpts_vs_cost_chart(data: pd.DataFrame, xpts_col: str = "Custom_xPts")
         ],
     ).properties(height=480).interactive()
     return _apply_dark_theme(chart)
-
 
 def create_pizza_chart(player_data: pd.Series, position_data: pd.DataFrame) -> plt.Figure:
     params = ["Cost", "Total Points", "Value (Pts/Cost)"]
