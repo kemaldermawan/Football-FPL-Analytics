@@ -5,6 +5,7 @@ import altair as alt
 
 from src.fetcher import get_fpl_players, get_team_rolling_form, get_fpl_team_strengths, get_next_opponent, get_fixture_run, get_season_status
 from src.visuals import create_scatter_plot, create_team_bar_chart, create_pizza_chart, create_xpts_vs_cost_chart
+from src.club_colors import style_table_by_club
 from src.tactical import draw_pass_network
 from src.predictor import (
     compute_team_strengths, expected_goals, generate_score_matrix,
@@ -18,7 +19,7 @@ from src.fpl_solver import optimize_squad, optimize_squad_multi_horizon, fetch_m
 from src.scouting_engine import run_kmeans_clustering, find_similar_players
 from src.xt_model import build_xt_grid
 from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map
-from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED
+from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -283,9 +284,22 @@ if app_module == "FPL Decision Engine":
                 help="Keeps the table focused on the columns most people scan first; tick this for the full picture.",
             )
 
-            # Sorted by Value by default so the most relevant players surface
-            # immediately instead of an arbitrary (usually ID-based) row order.
-            table_sorted = table_data.sort_values("Value (Pts/Cost)", ascending=False).copy()
+            sort_choice = st.radio(
+                "Sort by", ["Value (Pts/Cost)", "Club", "Position"], horizontal=True,
+            )
+
+            if sort_choice == "Value (Pts/Cost)":
+                table_sorted = table_data.sort_values("Value (Pts/Cost)", ascending=False).copy()
+            elif sort_choice == "Club":
+                table_sorted = table_data.sort_values(["Team", "Value (Pts/Cost)"], ascending=[True, False]).copy()
+            else:  # Position, in FPL's natural GKP -> DEF -> MID -> FWD order
+                table_sorted = table_data.copy()
+                table_sorted["_pos_order"] = table_sorted["Position"].apply(
+                    lambda p: POSITION_ORDER.index(p) if p in POSITION_ORDER else len(POSITION_ORDER)
+                )
+                table_sorted = table_sorted.sort_values(
+                    ["_pos_order", "Value (Pts/Cost)"], ascending=[True, False]
+                ).drop(columns="_pos_order")
 
             core_cols = [
                 "First Name", "Last Name", "Team", "Position", "Cost",
@@ -303,8 +317,10 @@ if app_module == "FPL Decision Engine":
 
             display_cols = core_cols + advanced_cols if show_advanced else core_cols
 
+            st.caption("🎨 Team column is colored by club identity — same color makes it easy to spot players from the same club at a glance.")
+
             st.dataframe(
-                table_sorted[display_cols],
+                style_table_by_club(table_sorted[display_cols], team_col="Team"),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
