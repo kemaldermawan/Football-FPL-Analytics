@@ -7,7 +7,7 @@ import os
 import json
 import pandas as pd
 
-from src.config import PATH_FPL_STATIC, PATH_TEAM_FORM, PATH_FPL_TEAMS, PATH_NEXT_OPPONENT, PATH_FIXTURE_RUN, PATH_SEASON_STATUS
+from src.config import PATH_FPL_STATIC, PATH_TEAM_FORM, PATH_FPL_TEAMS, PATH_NEXT_OPPONENT, PATH_FIXTURE_RUN, PATH_SEASON_STATUS, PATH_FPL_FIXTURES
 
 try:
     import streamlit as st
@@ -72,3 +72,11 @@ def get_season_status() -> dict:
         with open(PATH_SEASON_STATUS) as f:
             return json.load(f)
     return {"season_status": "UNKNOWN", "message": "Run update_engine.py to determine season status."}
+
+
+@_cache
+def get_all_fixtures() -> pd.DataFrame:
+    """Load the complete FPL fixture list for the entire season."""
+    if os.path.exists(PATH_FPL_FIXTURES):
+        return pd.read_parquet(PATH_FPL_FIXTURES, engine="pyarrow")
+    return pd.DataFrame()

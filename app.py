@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import altair as alt
 
-from src.fetcher import get_fpl_players, get_team_rolling_form, get_fpl_team_strengths, get_next_opponent, get_fixture_run, get_season_status
+from src.fetcher import get_fpl_players, get_team_rolling_form, get_fpl_team_strengths, get_next_opponent, get_fixture_run, get_season_status, get_all_fixtures
 from src.visuals import create_scatter_plot, create_team_bar_chart, create_pizza_chart, create_xpts_vs_cost_chart
 from src.club_colors import style_table_by_club
 from src.tactical import draw_pass_network
@@ -18,7 +18,7 @@ from src.analytics_engine import (
 from src.fpl_solver import optimize_squad, optimize_squad_multi_horizon, fetch_manager_squad, evaluate_chip_strategy
 from src.scouting_engine import run_kmeans_clustering, find_similar_players
 from src.xt_model import build_xt_grid
-from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map
+from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map, build_custom_fdr_matrix
 from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
 
 st.set_page_config(
@@ -146,8 +146,8 @@ if app_module == "FPL Decision Engine":
             file_name="fpl_filtered_data.csv", mime="text/csv",
         )
 
-        tab_market, tab_xpts, tab_milp, tab_horizon, tab_chip = st.tabs([
-            "Market Analysis", "Custom xPts Model", "MILP Squad Optimizer",
+        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip = st.tabs([
+            "Market Analysis", "Advanced Fixture Matrix", "Custom xPts Model", "MILP Squad Optimizer",
             "Multi-Horizon Planner", "Stochastic Chip Evaluator",
         ])
 
@@ -358,6 +358,86 @@ if app_module == "FPL Decision Engine":
             
             st.markdown("#### Accumulated Points per Team")
             st.altair_chart(create_team_bar_chart(table_data), use_container_width=True)
+
+        # --- Advanced Fixture Matrix ---
+        with tab_matrix:
+            st.subheader("Advanced Fixture Matrix (Custom FDR)")
+            st.info("Logarithmic Dixon-Coles difficulty matrix mapping opponent attack strength vs team defense vulnerability (1.0 = Easiest, 6.0+ = Brutal). Includes dynamic penalties for European fatigue and key player absences.")
+
+            fixtures_full_df = get_all_fixtures()
+            team_form_data = get_team_rolling_form()
+
+            if fixtures_full_df.empty:
+                st.warning("Fixture data is empty. Run `update_engine.py` to populate full fixtures.")
+            else:
+                fpl_teams = get_fpl_team_strengths()
+                team_id_map = dict(zip(fpl_teams["id"], fpl_teams["name"]))
+
+                # 1. Mengkalkulasi Dixon-Coles strengths jika data taktis dari Understat tersedia
+                dc_strengths = compute_team_strengths(team_form_data)
+                
+                # 2. LOGIKA CADANGAN (FALLBACK): 
+                # Jika data pramusim kosong, sintesis parameter secara proporsional dari indeks statis FPL
+                if dc_strengths.empty or len(dc_strengths) < 20:
+                    dc_strengths = pd.DataFrame({
+                        "Team": fpl_teams["name"],
+                        "Attack_Strength": fpl_teams["strength"] / 3.0,
+                        "Defense_Vulnerability": 3.0 / fpl_teams["strength"]
+                    })
+
+                # 3. Definisi Array European Clubs Musim Berjalan
+                uefa_clubs = ["Man City", "Arsenal", "Liverpool", "Aston Villa", "Spurs", "Man Utd", "Chelsea"]
+
+                # 4. Pemindaian Cerdas (Smart Scan) untuk Key Player Absence
+                key_absences_map = {}
+                for t_id, t_name in team_id_map.items():
+                    # Memindai raw_data menggunakan kolom 'team_name' yang terdefinisi
+                    team_roster = raw_data[raw_data["team_name"] == t_name].copy()
+                    
+                    # Memfilter pemain yang sedang cedera (i), diragukan (d), diskors (s), atau tidak tersedia (u)
+                    absent_players = team_roster[team_roster["status"].isin(["i", "s", "d", "u"])]
+                    
+                    # Identifikasi pemain kunci: Kepemilikan (Ownership) di atas 5%
+                    key_missing_count = sum(pd.to_numeric(absent_players["selected_by_percent"], errors="coerce") > 5.0)
+                    
+                    # Setiap pemain kunci yang cedera memberikan pinalti struktural 5%, ditahan maksimum pada 20%
+                    key_absences_map[t_name] = min(key_missing_count * 0.05, 0.20)
+
+                # Menyuplai seluruh parameter komputasi tingkat lanjut ke dalam matriks probabilitas
+                pivot_labels, pivot_values = build_custom_fdr_matrix(
+                    fixtures_full_df, 
+                    dc_strengths, 
+                    team_id_map, 
+                    european_teams=uefa_clubs, 
+                    key_absences=key_absences_map
+                )
+
+                if not pivot_labels.empty:
+                    col_slider, col_spacer = st.columns([1, 2])
+                    with col_slider:
+                        # Mengubah default rentang minggu menjadi 38 untuk cakupan 1 musim penuh
+                        horizon_weeks = st.slider("Projection Horizon (Gameweeks)", min_value=5, max_value=38, value=38, step=1)
+                    
+                    cols_to_show = list(pivot_labels.columns)[:horizon_weeks]
+
+                    def apply_fdr_colors(data_df, val_df):
+                        css_df = pd.DataFrame("", index=data_df.index, columns=data_df.columns)
+                        for col in data_df.columns:
+                            if col in val_df.columns:
+                                css_df[col] = val_df[col].apply(lambda v:
+                                    "background-color: #1a522a; color: #ffffff; font-weight: 600;" if v < 2.0 else
+                                    "background-color: #27ae60; color: #ffffff; font-weight: 600;" if v < 3.0 else
+                                    "background-color: #f1c40f; color: #000000; font-weight: 600;" if v < 4.0 else
+                                    "background-color: #e67e22; color: #000000; font-weight: 600;" if v < 5.0 else
+                                    "background-color: #e74c3c; color: #ffffff; font-weight: 600;" if v < 6.0 else
+                                    "background-color: #641e16; color: #ffffff; font-weight: 600;" if v >= 6.0 else ""
+                                )
+                        return css_df
+
+                    styler = pivot_labels[cols_to_show].style.apply(
+                        lambda df: apply_fdr_colors(df, pivot_values[cols_to_show]), axis=None
+                    )
+                    st.dataframe(styler, use_container_width=True, height=750)
 
         # --- Custom xPts Model ---
         with tab_xpts:
