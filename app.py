@@ -98,18 +98,34 @@ if app_module == "FPL Decision Engine":
             "chance_of_playing_next_round", "cost_change_event", "cost_change_start",
             "selected_by_percent", "transfers_in_event", "transfers_out_event",
         ]].copy()
+        
         display_data["now_cost"] = display_data["now_cost"] / 10.0
-        display_data["value"] = (display_data["total_points"] / display_data["now_cost"].replace(0, np.nan)).round(2)
 
         display_data.rename(columns={
             "first_name": "First Name", "second_name": "Last Name",
             "team_name": "Team", "position_name": "Position",
             "now_cost": "Cost", "total_points": "Total Points",
-            "value": "Value (Pts/Cost)", "minutes": "Minutes",
-            "chance_of_playing_next_round": "Chance_of_Playing",
+            "minutes": "Minutes", "chance_of_playing_next_round": "Chance_of_Playing",
             "cost_change_event": "Price_Change_GW", "cost_change_start": "Price_Change_Season",
             "selected_by_percent": "Ownership_Pct",
         }, inplace=True)
+
+        # 1. Komputasi VORP (Value Over Replacement Player)
+        base_costs = {"GKP": 4.0, "DEF": 4.0, "MID": 4.5, "FWD": 4.5}
+        display_data["Base_Cost"] = display_data["Position"].map(base_costs)
+        cost_diff = (display_data["Cost"] - display_data["Base_Cost"]).clip(lower=0.1)
+        display_data["VORP"] = (display_data["Total Points"] / cost_diff).round(2)
+        
+        # 2. Injeksi Form dan Regresi xG/xA
+        display_data["Form"] = pd.to_numeric(raw_data["form"], errors="coerce").fillna(0.0)
+        display_data["xG"] = pd.to_numeric(raw_data["expected_goals"], errors="coerce").fillna(0.0)
+        display_data["xA"] = pd.to_numeric(raw_data["expected_assists"], errors="coerce").fillna(0.0)
+        
+        goals = pd.to_numeric(raw_data["goals_scored"], errors="coerce").fillna(0.0)
+        assists = pd.to_numeric(raw_data["assists"], errors="coerce").fillna(0.0)
+        
+        # Negatif = Underperforming (Akan segera mencetak gol). Positif = Overperforming (Berisiko seret gol)
+        display_data["xG_xA_Delta"] = ((goals + assists) - (display_data["xG"] + display_data["xA"])).round(2)
 
         STATUS_LABELS = {
             "a": "Available", "d": "Doubtful", "i": "Injured",
@@ -153,13 +169,10 @@ if app_module == "FPL Decision Engine":
 
         # --- Market Analysis ---
         with tab_market:
-            st.subheader("Top Efficient Players (Value for Money)")
+            st.subheader("Top Efficient Players (Value Over Replacement)")
             st.caption(
-                "Ranked per position, restricted to available players who clear a minimum "
-                "minutes threshold — a raw Pts/Cost ratio without these filters rewards small "
-                "sample-size flukes (e.g. one big haul from a rarely-used player). Value itself "
-                "is still purely Points/Cost — fixture difficulty below is a separate filter, "
-                "shown transparently rather than blended into the ranking number."
+                "Ranked per position using VORP (Points per £M above the absolute positional base cost). "
+                "Restricted to available players clearing a minutes threshold to avoid small-sample flukes."
             )
 
             col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1.2, 1, 1])
@@ -182,9 +195,7 @@ if app_module == "FPL Decision Engine":
                 max_fdr = st.slider(
                     "Max acceptable average fixture difficulty (next 5 GWs)",
                     min_value=1.0, max_value=5.0, value=5.0, step=0.5,
-                    help="FPL's own official FDR: 1 = easiest run of fixtures, 5 = hardest. "
-                         "Leave at 5.0 to not filter by fixtures at all. Lower it to exclude "
-                         "teams facing a brutal run — e.g. good value now, but a tough month ahead.",
+                    help="FPL's own official FDR: 1 = easiest run of fixtures, 5 = hardest.",
                 )
             else:
                 max_fdr = None
@@ -196,12 +207,13 @@ if app_module == "FPL Decision Engine":
             if max_fdr is not None:
                 eligible = eligible[eligible["Avg_FDR"].fillna(max_fdr) <= max_fdr]
 
+            # Re-kalkulasi VORP berdasarkan filter ranking pilihan (Historis atau Proyeksi)
             if rank_basis.startswith("Historical"):
-                eligible["Value (Pts/Cost)"] = (eligible["Total Points"] / eligible["Cost"].replace(0, np.nan)).round(2)
+                eligible["VORP"] = (eligible["Total Points"] / (eligible["Cost"] - eligible["Base_Cost"]).clip(lower=0.1)).round(2)
                 rank_metric = "Total Points"
             else:
                 eligible["ep_next"] = pd.to_numeric(eligible["ep_next"], errors="coerce").fillna(0.0)
-                eligible["Value (Pts/Cost)"] = (eligible["ep_next"] / eligible["Cost"].replace(0, np.nan)).round(2)
+                eligible["VORP"] = (eligible["ep_next"] / (eligible["Cost"] - eligible["Base_Cost"]).clip(lower=0.1)).round(2)
                 rank_metric = "ep_next"
 
             if eligible.empty:
@@ -213,9 +225,6 @@ if app_module == "FPL Decision Engine":
                 with col_n:
                     picks_per_position = st.slider(
                         "Value picks to show per position", min_value=3, max_value=15, value=8,
-                        help="FPL squad quotas are 2 GKP / 5 DEF / 5 MID / 3 FWD — showing more than "
-                             "the quota gives you backup options in case your first choice gets "
-                             "injured, priced out, or you want to compare alternatives.",
                     )
                 with col_note:
                     st.caption(
@@ -224,12 +233,13 @@ if app_module == "FPL Decision Engine":
                         f"{POSITION_SQUAD_SLOTS['FWD']} FWD (15 total)."
                     )
 
-                st.markdown(f"#### Top {picks_per_position} Value Picks per Position")
+                st.markdown(f"#### Top {picks_per_position} VORP Picks per Position")
                 position_tabs = st.tabs(["GKP", "DEF", "MID", "FWD"])
                 for pos, pos_tab in zip(["GKP", "DEF", "MID", "FWD"], position_tabs):
                     with pos_tab:
+                        # Sorting menggunakan VORP
                         pos_players = eligible[eligible["Position"] == pos].nlargest(
-                            picks_per_position, "Value (Pts/Cost)"
+                            picks_per_position, "VORP"
                         )
                         if pos_players.empty:
                             st.info("No qualifying players at this position under the current filters.")
@@ -237,8 +247,6 @@ if app_module == "FPL Decision Engine":
 
                         st.caption(f"{len(pos_players)} shown · squad quota: {POSITION_SQUAD_SLOTS[pos]}")
 
-                        # Lay cards out in rows of 4 so the slider can go well past 3-4 without
-                        # squeezing every metric card into one unreadably narrow row.
                         players_list = list(pos_players.iterrows())
                         for row_start in range(0, len(players_list), 4):
                             row_players = players_list[row_start:row_start + 4]
@@ -253,18 +261,18 @@ if app_module == "FPL Decision Engine":
                                 fdr_note = f" | Next-5 FDR {fdr_val:.1f}" if pd.notna(fdr_val) else ""
                                 col.metric(
                                     label=f"{player_name} ({player['Team']})",
-                                    value=f"{player['Value (Pts/Cost)']} pts/£M",
+                                    value=f"{player['VORP']} VORP",
                                     delta=f"{player[rank_metric]:.1f} {rank_metric} | £{player['Cost']}M | {int(player['Minutes'])} min{chance_note}{fdr_note}",
                                     delta_color="off",
                                 )
 
-                st.markdown("#### Value Comparison — Top 8 Overall")
-                top_overall = eligible.nlargest(8, "Value (Pts/Cost)")
+                st.markdown("#### VORP Comparison — Top 8 Overall")
+                top_overall = eligible.nlargest(8, "VORP")
                 value_bar = alt.Chart(top_overall).mark_bar(color=COLOR_ACCENT).encode(
-                    x=alt.X("Value (Pts/Cost):Q", title="Points per £M"),
+                    x=alt.X("VORP:Q", title="Value Over Replacement"),
                     y=alt.Y("Last Name:N", sort="-x", title=None),
                     color=alt.Color("Position:N", scale=alt.Scale(range=["#e0b04f", "#4f8cf0", "#3fb27f", "#e2685f"])),
-                    tooltip=["First Name", "Last Name", "Team", "Position", "Cost", rank_metric, "Value (Pts/Cost)"],
+                    tooltip=["First Name", "Last Name", "Team", "Position", "Cost", rank_metric, "VORP", "Form"],
                 ).properties(height=320)
                 st.altair_chart(value_bar, use_container_width=True)
 
@@ -285,25 +293,28 @@ if app_module == "FPL Decision Engine":
             )
 
             sort_choice = st.radio(
-                "Sort by", ["Value (Pts/Cost)", "Club", "Position"], horizontal=True,
+                "Sort by", ["VORP", "Club", "Position", "Form"], horizontal=True,
             )
 
-            if sort_choice == "Value (Pts/Cost)":
-                table_sorted = table_data.sort_values("Value (Pts/Cost)", ascending=False).copy()
+            if sort_choice == "VORP":
+                table_sorted = table_data.sort_values("VORP", ascending=False).copy()
             elif sort_choice == "Club":
-                table_sorted = table_data.sort_values(["Team", "Value (Pts/Cost)"], ascending=[True, False]).copy()
-            else:  # Position, in FPL's natural GKP -> DEF -> MID -> FWD order
+                table_sorted = table_data.sort_values(["Team", "VORP"], ascending=[True, False]).copy()
+            elif sort_choice == "Form":
+                table_sorted = table_data.sort_values("Form", ascending=False).copy()
+            else:  # Position order
                 table_sorted = table_data.copy()
                 table_sorted["_pos_order"] = table_sorted["Position"].apply(
                     lambda p: POSITION_ORDER.index(p) if p in POSITION_ORDER else len(POSITION_ORDER)
                 )
                 table_sorted = table_sorted.sort_values(
-                    ["_pos_order", "Value (Pts/Cost)"], ascending=[True, False]
+                    ["_pos_order", "VORP"], ascending=[True, False]
                 ).drop(columns="_pos_order")
 
+            # Mengganti Value (Pts/Cost) dengan VORP, Form, dan xG_xA_Delta pada kolom utama
             core_cols = [
                 "First Name", "Last Name", "Team", "Position", "Cost",
-                "Total Points", "ep_next", "Value (Pts/Cost)", "Ownership_Pct",
+                "Total Points", "Form", "VORP", "xG_xA_Delta", "Ownership_Pct",
             ]
             if "Avg_FDR" in table_sorted.columns:
                 core_cols.append("Avg_FDR")
@@ -328,17 +339,20 @@ if app_module == "FPL Decision Engine":
                     "Last Name": st.column_config.TextColumn("Last Name", width="small"),
                     "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
                     "Total Points": st.column_config.NumberColumn("Total Pts"),
-                    "ep_next": st.column_config.NumberColumn("ep_next", format="%.1f"),
-                    "Value (Pts/Cost)": st.column_config.NumberColumn(
-                        "Value (Pts/£M)", format="%.2f",
-                        help="Points per £M spent — higher is better value.",
+                    "Form": st.column_config.NumberColumn("Form", format="%.1f", help="Average points per match over the last 30 days."),
+                    "VORP": st.column_config.NumberColumn(
+                        "VORP", format="%.2f",
+                        help="Value Over Replacement. Efficiency relative to the absolute minimum cost for the position.",
+                    ),
+                    "xG_xA_Delta": st.column_config.NumberColumn(
+                        "Perf. Delta", format="%+.2f",
+                        help="Negative = Underperforming (Due for a goal). Positive = Overperforming (Scoring from low-probability chances).",
                     ),
                     "Ownership_Pct": st.column_config.ProgressColumn(
                         "Ownership %", min_value=0, max_value=100, format="%.1f%%",
                     ),
                     "Avg_FDR": st.column_config.ProgressColumn(
                         "Next-5 FDR", min_value=1, max_value=5, format="%.1f",
-                        help="FPL's own difficulty rating: 1 = easiest run, 5 = hardest.",
                     ),
                     "Minutes": st.column_config.NumberColumn("Minutes"),
                     "Chance_of_Playing": st.column_config.NumberColumn("Chance to Play %", format="%.0f%%"),
@@ -348,7 +362,6 @@ if app_module == "FPL Decision Engine":
                     "Fixture_Run": st.column_config.TextColumn("Upcoming Fixtures", width="large"),
                 },
             )
-
             st.markdown("---")
             st.markdown("#### Player Value Distribution (Cost vs Points)")
             
@@ -362,7 +375,7 @@ if app_module == "FPL Decision Engine":
         # --- Advanced Fixture Matrix ---
         with tab_matrix:
             st.subheader("Advanced Fixture Matrix (Custom FDR)")
-            st.info("Logarithmic Dixon-Coles difficulty matrix mapping opponent attack strength vs team defense vulnerability (1.0 = Easiest, 6.0+ = Brutal). Includes dynamic penalties for European fatigue and key player absences.")
+            st.info("Logarithmic Dixon-Coles difficulty matrix mapping opponent strength vs team vulnerability (1.0 = Easiest, 6.0+ = Brutal). Split into Attack and Defense modules.")
 
             fixtures_full_df = get_all_fixtures()
             team_form_data = get_team_rolling_form()
@@ -370,14 +383,17 @@ if app_module == "FPL Decision Engine":
             if fixtures_full_df.empty:
                 st.warning("Fixture data is empty. Run `update_engine.py` to populate full fixtures.")
             else:
+                # Modulator Parameter Dinamis di Sidebar khusus tab ini
+                with st.sidebar.expander("FDR Algorithm Parameters", expanded=True):
+                    fdr_gamma = st.slider("Gamma (Scaling Factor)", 0.5, 2.5, 1.25, 0.05)
+                    fdr_home_adv = st.slider("Home Advantage (Delta)", -1.0, 0.0, -0.25, 0.05)
+                    fdr_away_adv = st.slider("Away Disadvantage (Delta)", 0.0, 1.0, 0.25, 0.05)
+
                 fpl_teams = get_fpl_team_strengths()
                 team_id_map = dict(zip(fpl_teams["id"], fpl_teams["name"]))
 
-                # 1. Mengkalkulasi Dixon-Coles strengths jika data taktis dari Understat tersedia
                 dc_strengths = compute_team_strengths(team_form_data)
                 
-                # 2. LOGIKA CADANGAN (FALLBACK): 
-                # Jika data pramusim kosong, sintesis parameter secara proporsional dari indeks statis FPL
                 if dc_strengths.empty or len(dc_strengths) < 20:
                     dc_strengths = pd.DataFrame({
                         "Team": fpl_teams["name"],
@@ -385,60 +401,66 @@ if app_module == "FPL Decision Engine":
                         "Defense_Vulnerability": 3.0 / fpl_teams["strength"]
                     })
 
-                # 3. Definisi Array European Clubs Musim Berjalan
-                uefa_clubs = ["Man City", "Arsenal", "Liverpool", "Aston Villa", "Spurs", "Man Utd", "Chelsea"]
+                # 3. Definisi Array European Clubs Musim 2026/2027
+                uefa_clubs = [
+                    "Arsenal", "Man City", "Man Utd", "Aston Villa", 
+                    "Liverpool", "Bournemouth", "Sunderland", 
+                    "Crystal Palace", "Brighton"
+                ]
 
-                # 4. Pemindaian Cerdas (Smart Scan) untuk Key Player Absence
                 key_absences_map = {}
                 for t_id, t_name in team_id_map.items():
-                    # Memindai raw_data menggunakan kolom 'team_name' yang terdefinisi
                     team_roster = raw_data[raw_data["team_name"] == t_name].copy()
-                    
-                    # Memfilter pemain yang sedang cedera (i), diragukan (d), diskors (s), atau tidak tersedia (u)
                     absent_players = team_roster[team_roster["status"].isin(["i", "s", "d", "u"])]
-                    
-                    # Identifikasi pemain kunci: Kepemilikan (Ownership) di atas 5%
                     key_missing_count = sum(pd.to_numeric(absent_players["selected_by_percent"], errors="coerce") > 5.0)
-                    
-                    # Setiap pemain kunci yang cedera memberikan pinalti struktural 5%, ditahan maksimum pada 20%
                     key_absences_map[t_name] = min(key_missing_count * 0.05, 0.20)
 
-                # Menyuplai seluruh parameter komputasi tingkat lanjut ke dalam matriks probabilitas
-                pivot_labels, pivot_values = build_custom_fdr_matrix(
-                    fixtures_full_df, 
-                    dc_strengths, 
-                    team_id_map, 
-                    european_teams=uefa_clubs, 
-                    key_absences=key_absences_map
+                matrix_results = build_custom_fdr_matrix(
+                    fixtures_full_df, dc_strengths, team_id_map, 
+                    european_teams=uefa_clubs, key_absences=key_absences_map,
+                    gamma=fdr_gamma, home_adv=fdr_home_adv, away_adv=fdr_away_adv
                 )
 
-                if not pivot_labels.empty:
-                    col_slider, col_spacer = st.columns([1, 2])
-                    with col_slider:
-                        # Mengubah default rentang minggu menjadi 38 untuk cakupan 1 musim penuh
-                        horizon_weeks = st.slider("Projection Horizon (Gameweeks)", min_value=5, max_value=38, value=38, step=1)
+                if matrix_results:
+                    horizon_weeks = st.slider("Projection Horizon (Gameweeks)", min_value=5, max_value=38, value=12, step=1)
                     
-                    cols_to_show = list(pivot_labels.columns)[:horizon_weeks]
-
                     def apply_fdr_colors(data_df, val_df):
                         css_df = pd.DataFrame("", index=data_df.index, columns=data_df.columns)
                         for col in data_df.columns:
                             if col in val_df.columns:
-                                css_df[col] = val_df[col].apply(lambda v:
-                                    "background-color: #1a522a; color: #ffffff; font-weight: 600;" if v < 2.0 else
-                                    "background-color: #27ae60; color: #ffffff; font-weight: 600;" if v < 3.0 else
-                                    "background-color: #f1c40f; color: #000000; font-weight: 600;" if v < 4.0 else
-                                    "background-color: #e67e22; color: #000000; font-weight: 600;" if v < 5.0 else
-                                    "background-color: #e74c3c; color: #ffffff; font-weight: 600;" if v < 6.0 else
-                                    "background-color: #641e16; color: #ffffff; font-weight: 600;" if v >= 6.0 else ""
-                                )
+                                for idx in data_df.index:
+                                    v = val_df.at[idx, col]
+                                    label = str(data_df.at[idx, col])
+                                    
+                                    # Logika BGW (Blank Gameweek)
+                                    if v >= 99.0 or label == "BLANK":
+                                        css = "background-color: #000000; color: #555555; font-weight: 600;"
+                                    elif v < 2.0: css = "background-color: #1a522a; color: #ffffff; font-weight: 600;"
+                                    elif v < 3.0: css = "background-color: #27ae60; color: #ffffff; font-weight: 600;"
+                                    elif v < 4.0: css = "background-color: #f1c40f; color: #000000; font-weight: 600;"
+                                    elif v < 5.0: css = "background-color: #e67e22; color: #000000; font-weight: 600;"
+                                    elif v < 6.0: css = "background-color: #e74c3c; color: #ffffff; font-weight: 600;"
+                                    else: css = "background-color: #641e16; color: #ffffff; font-weight: 600;"
+                                    
+                                    # Logika DGW (Double Gameweek)
+                                    if "\n" in label:
+                                        css += " border: 3px solid #e0b04f;"
+                                        
+                                    css_df.at[idx, col] = css
                         return css_df
 
-                    styler = pivot_labels[cols_to_show].style.apply(
-                        lambda df: apply_fdr_colors(df, pivot_values[cols_to_show]), axis=None
-                    )
-                    st.dataframe(styler, use_container_width=True, height=750)
+                    atk_lbl, atk_val = matrix_results["attack"]
+                    def_lbl, def_val = matrix_results["defense"]
+                    cols_to_show = list(atk_lbl.columns)[:horizon_weeks]
 
+                    st.markdown("#### Attack FDR Matrix (Targeting Opponent Defense Vulnerability)")
+                    styler_atk = atk_lbl[cols_to_show].style.apply(lambda df: apply_fdr_colors(df, atk_val[cols_to_show]), axis=None)
+                    st.dataframe(styler_atk, use_container_width=True, height=500)
+
+                    st.markdown("#### Defense FDR Matrix (Targeting Opponent Attack Strength)")
+                    styler_def = def_lbl[cols_to_show].style.apply(lambda df: apply_fdr_colors(df, def_val[cols_to_show]), axis=None)
+                    st.dataframe(styler_def, use_container_width=True, height=500)
+                    
         # --- Custom xPts Model ---
         with tab_xpts:
             st.subheader("Custom xPts Projection Model")
