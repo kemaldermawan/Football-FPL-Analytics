@@ -490,21 +490,21 @@ if app_module == "FPL Decision Engine":
                 xpts_df["Goal_Weight"] = xpts_df["Position"].map(goal_pts)
                 xpts_df["CS_Weight"] = xpts_df["Position"].map(cs_pts)
 
-                # Konversi probabilitas bermain dari persentase menjadi desimal
-                play_prob = xpts_df["Chance_of_Playing"].fillna(100.0) / 100.0
+                # 2b. Injeksi Faktor Expected Minutes (xMins)
+                # Menghukum pemain cadangan/akademi dengan mengasumsikan standar pemain inti adalah 2500 menit per musim
+                xmins_factor = (xpts_df["Minutes"] / 2500.0).clip(lower=0.05, upper=1.0)
+                play_prob = (xpts_df["Chance_of_Playing"].fillna(100.0) / 100.0) * xmins_factor
                 
-                # Normalisasi statistik akumulatif menjadi per-90 menit (dibatasi minimal 1 laga untuk hindari galat pembagian)
+                # Normalisasi statistik akumulatif menjadi per-90 menit
                 games_played = (xpts_df["Minutes"] / 90.0).clip(lower=1.0)
                 xg_per_gw = xpts_df["xG"] / games_played
                 xa_per_gw = xpts_df["xA"] / games_played
                 
                 # 3. Modulator Distribusi Dixon-Coles
-                # (Nilai 3.5 adalah rasio netral. FDR lawan yang rendah memicu faktor pengali > 1.0)
                 atk_factor = 3.5 / xpts_df["Avg_Atk_FDR"]
                 def_factor = 3.5 / xpts_df["Avg_Def_FDR"]
 
                 # 4. Kalkulasi Deterministik xPts
-                # Asumsi dasar probabilitas Clean Sheet (P_cs) liga adalah 0.30
                 base_xpts_per_gw = (
                     2.0 + 
                     (xg_per_gw * xpts_df["Goal_Weight"] * atk_factor) + 
@@ -513,7 +513,9 @@ if app_module == "FPL Decision Engine":
                 ) * play_prob
 
                 xpts_df["Proj_xPts"] = (base_xpts_per_gw * horizon).round(2)
-                xpts_df["Proj_Value"] = (xpts_df["Proj_xPts"] / (xpts_df["Cost"] - xpts_df["Base_Cost"]).clip(lower=0.1)).round(2)
+                
+                # 4b. Kalibrasi Pembagi VORP (Dinaikkan dari 0.1 menjadi 0.5 sesuai batas pergerakan harga FPL)
+                xpts_df["Proj_Value"] = (xpts_df["Proj_xPts"] / (xpts_df["Cost"] - xpts_df["Base_Cost"]).clip(lower=0.5)).round(2)
 
                 # 4b. Kalkulasi Model Edge (Delta vs FPL Public API)
                 ep_next_cum = pd.to_numeric(xpts_df["ep_next"], errors="coerce").fillna(0.0) * horizon
