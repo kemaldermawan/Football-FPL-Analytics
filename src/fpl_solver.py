@@ -198,16 +198,17 @@ def optimize_squad_multi_horizon(df: pd.DataFrame, projection_cols: list,
 
 
 def evaluate_chip_strategy(df: pd.DataFrame, current_squad_ids: list,
-                            budget: float = BUDGET_DEFAULT) -> dict:
+                            budget: float = BUDGET_DEFAULT, target_col: str = "ep_next") -> dict:
     df_eval = df.copy()
-    df_eval["ep_next"] = pd.to_numeric(df_eval.get("ep_next", 0), errors="coerce").fillna(0.0)
+    target_metric = target_col if target_col in df_eval.columns else "ep_next"
+    df_eval[target_metric] = pd.to_numeric(df_eval.get(target_metric, 0), errors="coerce").fillna(0.0)
 
     current_squad = df_eval[df_eval["id"].isin(current_squad_ids)] if current_squad_ids else pd.DataFrame()
-    current_xpts = current_squad["ep_next"].sum() if not current_squad.empty else 0.0
+    current_xpts = current_squad[target_metric].sum() if not current_squad.empty else 0.0
 
     if not df_eval.empty:
-        optimal_squad = optimize_squad(df_eval, budget=budget, target_metric="ep_next")
-        wildcard_xpts = optimal_squad["ep_next"].sum() if not optimal_squad.empty else 0.0
+        optimal_squad = optimize_squad(df_eval, budget=budget, target_metric=target_metric)
+        wildcard_xpts = optimal_squad[target_metric].sum() if not optimal_squad.empty else 0.0
     else:
         wildcard_xpts = 0.0
 

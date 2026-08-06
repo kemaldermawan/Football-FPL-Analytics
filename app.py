@@ -797,18 +797,36 @@ if app_module == "FPL Decision Engine":
         # --- Stochastic Chip Evaluator ---
         with tab_chip:
             st.subheader("Live Squad Sync & Strategy Evaluation")
-            fpl_team_id = st.text_input("Enter FPL Team ID (e.g., 123456)")
-            if st.button("Evaluate Current Strategy"):
+            st.info("Synchronizes your active FPL team via ID and evaluates chip activation thresholds using custom expected points.")
+            fpl_team_id = st.text_input("Enter FPL Team ID (e.g., 123456)", key="chip_team_id_input")
+            
+            if st.button("Evaluate Current Strategy", key="eval_chip_btn"):
                 if fpl_team_id:
                     with st.spinner("Fetching live data and running stochastic evaluation..."):
                         squad_ids = fetch_manager_squad(fpl_team_id)
                         if squad_ids:
-                            my_squad = display_data[display_data["id"].isin(squad_ids)].copy()
+                            eval_df = filtered_data.copy()
+                            if "xpts_df" in locals() and "Proj_xPts" in xpts_df.columns:
+                                eval_df["Proj_xPts"] = xpts_df["Proj_xPts"]
+                                active_metric = "Proj_xPts"
+                            else:
+                                active_metric = "ep_next"
+
+                            my_squad = eval_df[eval_df["id"].isin(squad_ids)].copy()
                             st.success("Squad synchronized successfully.")
-                            st.dataframe(my_squad[["First Name", "Last Name", "Team", "Cost"]], use_container_width=True)
+                            
+                            display_cols = ["First Name", "Last Name", "Team", "Position", "Cost", active_metric]
+                            st.dataframe(
+                                style_table_by_club(my_squad[display_cols], team_col="Team"),
+                                use_container_width=True, hide_index=True,
+                                column_config={
+                                    "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                                    active_metric: st.column_config.NumberColumn("Projected Target Pts", format="%.2f"),
+                                }
+                            )
 
                             st.markdown("#### Stochastic Chip Evaluator")
-                            eval_results = evaluate_chip_strategy(raw_data, squad_ids)
+                            eval_results = evaluate_chip_strategy(eval_df, squad_ids, target_col=active_metric)
 
                             e_col1, e_col2, e_col3 = st.columns(3)
                             e_col1.metric("Current xPts", eval_results["Current_Projected_Pts"])
@@ -820,8 +838,6 @@ if app_module == "FPL Decision Engine":
                             st.error("Invalid Team ID, private squad, or FPL API rate limit exceeded.")
                 else:
                     st.warning("Team ID is strictly required.")
-    else:
-        st.error("System failed to retrieve local FPL data. Run `python update_engine.py` first.")
 
 # ===========================================================================
 # MODULE 2 — TACTICAL FOOTBALL ANALYST
