@@ -461,86 +461,149 @@ if app_module == "FPL Decision Engine":
                     styler_def = def_lbl[cols_to_show].style.apply(lambda df: apply_fdr_colors(df, def_val[cols_to_show]), axis=None)
                     st.dataframe(styler_def, use_container_width=True, height=500)
                     
-        # --- Custom xPts Model ---
+# --- Custom xPts Model ---
         with tab_xpts:
-            st.subheader("Custom xPts Projection Model")
-            st.info(
-                "Replaces the FPL API's own `ep_next` figure with an in-house projection combining "
-                "Fixture Difficulty (FDR, from FPL's own team strength ratings), rotation risk from "
-                "European fixtures, actual-vs-expected conversion ratio, and projected minutes (xMins)."
-            )
+            st.subheader("Custom Expected Points (xPts) Engine")
+            st.info("Deterministic xPts projection utilizing underlying xG/xA metrics modulated by the dual-dimension Dixon-Coles matrices.")
 
-            if season_info.get("season_status") == "PRE_SEASON":
-                st.error(
-                    "🚧 **This model is not meaningful right now.** The season hasn't started, so "
-                    "the xG, goals, assists, and minutes feeding this projection are all leftover "
-                    "values from last season carried over by the FPL API. Custom_xPts below is "
-                    "arithmetically correct but reflects last season's form, not this one. Re-run "
-                    "`update_engine.py` once gameweek 1 has kicked off for a meaningful projection."
+            if "matrix_results" in locals() and matrix_results:
+                col_xp1, col_xp2 = st.columns([1, 2])
+                with col_xp1:
+                    horizon = st.slider("Projection Horizon (Gameweeks)", min_value=1, max_value=8, value=5, key="xpts_horizon")
+
+                # 1. Ekstraksi dan Pemetaan Rata-rata FDR per Klub
+                atk_lbl, atk_val = matrix_results["attack"]
+                def_lbl, def_val = matrix_results["defense"]
+                upcoming_gws = list(atk_val.columns)[:horizon]
+
+                team_atk_fdr = atk_val[upcoming_gws].mean(axis=1)
+                team_def_fdr = def_val[upcoming_gws].mean(axis=1)
+
+                xpts_df = filtered_data.copy()
+                xpts_df["Avg_Atk_FDR"] = xpts_df["Team"].map(team_atk_fdr).fillna(3.5)
+                xpts_df["Avg_Def_FDR"] = xpts_df["Team"].map(team_def_fdr).fillna(3.5)
+
+                # 2. Definisi Parameter Dasar dan Bobot Posisi FPL
+                goal_pts = {"GKP": 6, "DEF": 6, "MID": 5, "FWD": 4}
+                cs_pts = {"GKP": 4, "DEF": 4, "MID": 1, "FWD": 0}
+                
+                xpts_df["Goal_Weight"] = xpts_df["Position"].map(goal_pts)
+                xpts_df["CS_Weight"] = xpts_df["Position"].map(cs_pts)
+
+                # Konversi probabilitas bermain dari persentase menjadi desimal
+                play_prob = xpts_df["Chance_of_Playing"].fillna(100.0) / 100.0
+                
+                # Normalisasi statistik akumulatif menjadi per-90 menit (dibatasi minimal 1 laga untuk hindari galat pembagian)
+                games_played = (xpts_df["Minutes"] / 90.0).clip(lower=1.0)
+                xg_per_gw = xpts_df["xG"] / games_played
+                xa_per_gw = xpts_df["xA"] / games_played
+                
+                # 3. Modulator Distribusi Dixon-Coles
+                # (Nilai 3.5 adalah rasio netral. FDR lawan yang rendah memicu faktor pengali > 1.0)
+                atk_factor = 3.5 / xpts_df["Avg_Atk_FDR"]
+                def_factor = 3.5 / xpts_df["Avg_Def_FDR"]
+
+                # 4. Kalkulasi Deterministik xPts
+                # Asumsi dasar probabilitas Clean Sheet (P_cs) liga adalah 0.30
+                base_xpts_per_gw = (
+                    2.0 + 
+                    (xg_per_gw * xpts_df["Goal_Weight"] * atk_factor) + 
+                    (xa_per_gw * 3.0 * atk_factor) + 
+                    (0.30 * xpts_df["CS_Weight"] * def_factor)
+                ) * play_prob
+
+                xpts_df["Proj_xPts"] = (base_xpts_per_gw * horizon).round(2)
+                xpts_df["Proj_Value"] = (xpts_df["Proj_xPts"] / (xpts_df["Cost"] - xpts_df["Base_Cost"]).clip(lower=0.1)).round(2)
+
+                # 4b. Kalkulasi Model Edge (Delta vs FPL Public API)
+                ep_next_cum = pd.to_numeric(xpts_df["ep_next"], errors="coerce").fillna(0.0) * horizon
+                xpts_df["Model_Edge"] = (xpts_df["Proj_xPts"] - ep_next_cum).round(2)
+
+                # 5. Visualisasi Kuadran Nilai
+                st.markdown(f"#### Value Quadrant Mapping (Next {horizon} GWs)")
+                st.caption("Top-Left quadrant indicates maximum point potential at minimum cost.")
+                
+                valid_plot_data = xpts_df[xpts_df["Proj_xPts"] > 2.0].copy()
+                
+                # Pemetaan Warna Identitas Klub EPL
+                TEAM_COLORS = {
+                    "Arsenal": "#EF0107", "Aston Villa": "#95BFE5", "Bournemouth": "#B50E12",
+                    "Brentford": "#E30613", "Brighton": "#0057B8", "Chelsea": "#034694",
+                    "Crystal Palace": "#1B458F", "Everton": "#003399", "Fulham": "#CCCCCC",
+                    "Ipswich": "#0053A0", "Leicester": "#003090", "Liverpool": "#C8102E",
+                    "Man City": "#6CABDD", "Man Utd": "#DA291C", "Newcastle": "#241F20",
+                    "Nott'm Forest": "#DD0000", "Southampton": "#D71920", "Spurs": "#132257",
+                    "West Ham": "#7A263A", "Wolves": "#FDB913", "Sunderland": "#EB172B"
+                }
+                
+                # Fungsi pembuat grafik dengan injeksi warna dinamis
+                def build_quadrant_chart(plot_df, color_mode="Position"):
+                    if color_mode == "Position":
+                        color_encode = alt.Color(
+                            "Position:N", 
+                            scale=alt.Scale(
+                                domain=["GKP", "DEF", "MID", "FWD"],
+                                range=["#e0b04f", "#4f8cf0", "#3fb27f", "#e2685f"]
+                            ),
+                            legend=alt.Legend(title="Position")
+                        )
+                    else:
+                        color_encode = alt.Color(
+                            "Team:N",
+                            scale=alt.Scale(
+                                domain=list(TEAM_COLORS.keys()),
+                                range=list(TEAM_COLORS.values())
+                            ),
+                            legend=alt.Legend(title="Club Identity")
+                        )
+                        
+                    return alt.Chart(plot_df).mark_circle(size=80).encode(
+                        x=alt.X("Cost:Q", scale=alt.Scale(zero=False), title="Current Cost (£M)"),
+                        y=alt.Y("Proj_xPts:Q", title=f"Projected Pts (Cumulative)"),
+                        color=color_encode,
+                        tooltip=["First Name", "Last Name", "Team", "Position", "Cost", "Proj_xPts", "Proj_Value", "Form"]
+                    ).interactive().properties(height=450)
+
+                # Pemisahan antarmuka menjadi tab per posisi
+                quadrant_tabs = st.tabs(["All", "GKP", "DEF", "MID", "FWD"])
+                
+                # Tab gabungan menggunakan indikator posisi
+                with quadrant_tabs[0]:
+                    st.altair_chart(build_quadrant_chart(valid_plot_data, color_mode="Position"), use_container_width=True)
+                
+                # Tab spesifik posisi menggunakan indikator klub
+                for idx, pos in enumerate(["GKP", "DEF", "MID", "FWD"]):
+                    with quadrant_tabs[idx + 1]:
+                        pos_data = valid_plot_data[valid_plot_data["Position"] == pos]
+                        if not pos_data.empty:
+                            st.altair_chart(build_quadrant_chart(pos_data, color_mode="Team"), use_container_width=True)
+                        else:
+                            st.info(f"No {pos} data available above the 2.0 xPts minimum threshold.")
+
+                st.markdown("#### Tabular Projection Output")
+                table_cols = ["First Name", "Last Name", "Team", "Position", "Cost", "Proj_xPts", "Proj_Value", "Model_Edge", "Form", "Avg_Atk_FDR", "Avg_Def_FDR"]
+                xpts_sorted = xpts_df.sort_values("Proj_xPts", ascending=False)
+                
+                st.dataframe(
+                    style_table_by_club(xpts_sorted[table_cols], team_col="Team"),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "First Name": st.column_config.TextColumn("First Name", width="small"),
+                        "Last Name": st.column_config.TextColumn("Last Name", width="small"),
+                        "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                        "Proj_xPts": st.column_config.NumberColumn(f"Proj. xPts ({horizon}GW)", format="%.2f"),
+                        "Proj_Value": st.column_config.NumberColumn("Proj. VORP", format="%.2f"),
+                        "Model_Edge": st.column_config.NumberColumn(
+                            "Model Edge", format="%+.2f", 
+                            help="Positive value means our model predicts higher points than the public FPL algorithm (Hidden Gem)."
+                        ),
+                        "Avg_Atk_FDR": st.column_config.NumberColumn("Opp. Def Vulnerability", format="%.2f"),
+                        "Avg_Def_FDR": st.column_config.NumberColumn("Opp. Atk Strength", format="%.2f"),
+                    }
                 )
-
-            team_strengths_df = get_fpl_team_strengths()
-            next_opponent_df = get_next_opponent()
-            opponent_defense_map = build_opponent_defense_map(team_strengths_df)
-
-            with st.expander("Select teams with a midweek European fixture (rotation risk)", expanded=False):
-                st.caption(
-                    "The public FPL API doesn't expose Champions/Europa League fixtures, so this "
-                    "list is manual — tick any club playing in Europe this week to apply the "
-                    "rotation-risk discount to their squad's projection."
-                )
-                european_teams = set(st.multiselect("Teams in European competition this week", teams_list))
-
-            xpts_data = filtered_data.rename(columns={"Last Name": "Player"}).copy()
-
-            # Merge in xG/xA/goals/assists/rolling-minutes from the FPL bootstrap payload.
-            # IMPORTANT: expected_goals/goals_scored/etc from the API are SEASON-CUMULATIVE
-            # totals, but Custom_xPts projects a single upcoming gameweek — so these are
-            # converted to a per-90-minute rate first. Feeding season totals directly here
-            # was the earlier bug that made Custom_xPts blow up into triple digits.
-            matches_played_est = (pd.to_numeric(raw_data["minutes"], errors="coerce") / 90).replace(0, np.nan)
-            raw_metrics = pd.DataFrame({
-                "id": raw_data["id"],
-                "xG": pd.to_numeric(raw_data["expected_goals"], errors="coerce") / matches_played_est,
-                "xA": pd.to_numeric(raw_data["expected_assists"], errors="coerce") / matches_played_est,
-                "Goals": pd.to_numeric(raw_data["goals_scored"], errors="coerce") / matches_played_est,
-                "Assists": pd.to_numeric(raw_data["assists"], errors="coerce") / matches_played_est,
-                "rolling_minutes_per_match": raw_data["rolling_minutes_per_match"],
-            }).fillna(0.0)
-
-            xpts_data = xpts_data.merge(raw_metrics, on="id", how="left")
-            xpts_data = xpts_data.rename(columns={"rolling_minutes_per_match": "Rolling_Minutes"})
-
-            # Merge in each player's next opponent (by team)
-            if not next_opponent_df.empty:
-                xpts_data = xpts_data.merge(next_opponent_df[["Team", "Opponent"]], on="Team", how="left")
             else:
-                xpts_data["Opponent"] = np.nan
-
-            missing_opponent = xpts_data["Opponent"].isna().sum()
-            missing_fdr = len(opponent_defense_map) == 0
-
-            if missing_fdr or next_opponent_df.empty:
-                st.warning(
-                    "Fixture data not found — run `python update_engine.py` to populate team strength "
-                    "ratings and next-opponent fixtures. Showing projections without the FDR/opponent "
-                    "adjustment until then."
-                )
-            elif missing_opponent > 0:
-                st.caption(f"{missing_opponent} player(s) have no upcoming fixture on file (team may be on a bye or season data incomplete).")
-
-            custom_result = compute_custom_xpts(
-                xpts_data, opponent_defense_map=opponent_defense_map,
-                european_fixture_teams=european_teams,
-            )
-
-            top_n = st.slider("How many players to show", min_value=5, max_value=50, value=15, step=5)
-            top_custom = custom_result.nlargest(top_n, "Custom_xPts")[
-                ["Player", "Team", "Position", "Cost", "Opponent", "Custom_xPts", "ep_next",
-                 "FDR_Multiplier", "Rotation_Multiplier", "xMins_Factor"]
-            ]
-            st.dataframe(top_custom, use_container_width=True)
-            st.altair_chart(create_xpts_vs_cost_chart(custom_result, "Custom_xPts"), use_container_width=True)
+                st.warning("Dixon-Coles Matrix data is missing. Please ensure the Advanced Fixture Matrix tab processes correctly.")
 
         # --- MILP Squad Optimizer ---
         with tab_milp:
