@@ -113,7 +113,7 @@ if app_module == "FPL Decision Engine":
         # 1. Komputasi VORP (Value Over Replacement Player)
         base_costs = {"GKP": 4.0, "DEF": 4.0, "MID": 4.5, "FWD": 4.5}
         display_data["Base_Cost"] = display_data["Position"].map(base_costs)
-        cost_diff = (display_data["Cost"] - display_data["Base_Cost"]).clip(lower=0.1)
+        cost_diff = (display_data["Cost"] - display_data["Base_Cost"]).clip(lower=0.5)
         display_data["VORP"] = (display_data["Total Points"] / cost_diff).round(2)
         
         # 2. Injeksi Form dan Regresi xG/xA
@@ -209,11 +209,11 @@ if app_module == "FPL Decision Engine":
 
             # Re-kalkulasi VORP berdasarkan filter ranking pilihan (Historis atau Proyeksi)
             if rank_basis.startswith("Historical"):
-                eligible["VORP"] = (eligible["Total Points"] / (eligible["Cost"] - eligible["Base_Cost"]).clip(lower=0.1)).round(2)
+                eligible["VORP"] = (eligible["Total Points"] / (eligible["Cost"] - eligible["Base_Cost"]).clip(lower=0.5)).round(2)
                 rank_metric = "Total Points"
             else:
                 eligible["ep_next"] = pd.to_numeric(eligible["ep_next"], errors="coerce").fillna(0.0)
-                eligible["VORP"] = (eligible["ep_next"] / (eligible["Cost"] - eligible["Base_Cost"]).clip(lower=0.1)).round(2)
+                eligible["VORP"] = (eligible["ep_next"] / (eligible["Cost"] - eligible["Base_Cost"]).clip(lower=0.5)).round(2)
                 rank_metric = "ep_next"
 
             if eligible.empty:
@@ -609,19 +609,109 @@ if app_module == "FPL Decision Engine":
 
         # --- MILP Squad Optimizer ---
         with tab_milp:
-            st.subheader("Expected Points Maximization")
-            st.info("Executes a deterministic PuLP solver to generate the mathematically optimal 15-man squad under budget, positional, and per-club constraints.")
+            st.subheader("MILP Squad Optimizer (Expected Points Maximization)")
+            st.info("Executes a deterministic Mixed-Integer Linear Programming (MILP) solver to generate the mathematically optimal 15-man squad under budget, positional, and per-club constraints.")
+            
+            # Deteksi ketersediaan metrik Proj_xPts dari tab sebelumnya
+            use_custom_xpts = "xpts_df" in locals() and "Proj_xPts" in xpts_df.columns
+            
+            if use_custom_xpts:
+                st.success("Target Objective: Custom `Proj_xPts` (Dixon-Coles adjusted) from the xPts Engine.")
+                solver_data = xpts_df.copy()
+                target_col = "Proj_xPts"
+            else:
+                st.warning("Target Objective: Default FPL `ep_next`. Run the Advanced Fixture Matrix to unlock Custom xPts optimization.")
+                solver_data = display_data.copy()
+                target_col = "ep_next"
+
+            # Injeksi Kontrol Human-in-the-Loop
+            st.markdown("#### Optimization Constraints & Vetos")
+            col_opt1, col_opt2, col_opt3 = st.columns(3)
+            
+            with col_opt1:
+                opt_budget = st.number_input("Total Budget (£M)", min_value=85.0, max_value=105.0, value=100.0, step=0.1)
+                exclude_unavailable = st.checkbox("Exclude Unavailable (Red/Yellow Flags)", value=True)
+            
+            with col_opt2:
+                team_list_opt = sorted(solver_data["Team"].dropna().unique())
+                banned_teams = st.multiselect("Veto Teams (Blacklist)", team_list_opt, help="Exclude all players from these clubs (e.g., due to blank gameweeks or brutal FDR).")
+            
+            with col_opt3:
+                player_list_opt = sorted(solver_data["Last Name"].dropna().unique())
+                banned_players = st.multiselect("Veto Players (Blacklist)", player_list_opt, help="Exclude specific players you refuse to select.")
+
             if st.button("Generate Mathematically Optimal Squad"):
                 with st.spinner("Calculating optimal integer combinations..."):
-                    optimal_squad = optimize_squad(display_data, budget=100.0, target_metric="ep_next")
+                    # 1. Eksekusi Pra-Pemrosesan (Pruning Search Space)
+                    if exclude_unavailable:
+                        solver_data = solver_data[solver_data["Availability"] == "Available"].copy()
+                    if banned_teams:
+                        solver_data = solver_data[~solver_data["Team"].isin(banned_teams)].copy()
+                    if banned_players:
+                        solver_data = solver_data[~solver_data["Last Name"].isin(banned_players)].copy()
+                    
+                    # 2. Pemanggilan Mesin Penyelesai PuLP
+                    optimal_squad = optimize_squad(solver_data, budget=opt_budget, target_metric=target_col)
+                    
                     if optimal_squad.empty:
-                        st.error("No feasible solution found under current constraints.")
+                        st.error("No feasible solution found under current constraints. Try increasing the budget or removing vetos.")
                     else:
-                        st.success("Mathematical optimization complete.")
-                        st.dataframe(optimal_squad, use_container_width=True)
+                        st.success("Mathematical optimization complete. Global maxima found.")
+                        
+                        # 3. Heuristik Pemisahan Starting XI vs Bench (Berdasarkan Proyeksi Poin)
+                        # Mengasumsikan 4 pemain dengan proyeksi terendah (termasuk 1 kiper) akan berada di bangku cadangan
+                        gkp_df = optimal_squad[optimal_squad["Position"] == "GKP"].sort_values(target_col, ascending=False)
+                        outfield_df = optimal_squad[optimal_squad["Position"] != "GKP"].sort_values(target_col, ascending=False)
+                        
+                        starting_xi = pd.concat([gkp_df.head(1), outfield_df.head(10)])
+                        bench_squad = pd.concat([gkp_df.tail(1), outfield_df.tail(3)])
+                        
+                        # Penyusunan tata letak otomatis berdasarkan urutan posisi FPL
+                        def sort_fpl_positions(df):
+                            df["_pos_order"] = df["Position"].apply(lambda p: POSITION_ORDER.index(p) if p in POSITION_ORDER else 99)
+                            return df.sort_values(by=["_pos_order", "Cost"], ascending=[True, False]).drop(columns="_pos_order")
+                        
+                        starting_xi = sort_fpl_positions(starting_xi)
+                        bench_squad = sort_fpl_positions(bench_squad)
+                        
+                        display_cols = ["First Name", "Last Name", "Team", "Position", "Cost", target_col]
+                        if "VORP" in optimal_squad.columns: display_cols.append("VORP")
+                        if "Model_Edge" in optimal_squad.columns: display_cols.append("Model_Edge")
+                            
+                        # Rendering Tabel Visual
+                        st.markdown(f"#### Projected Starting XI (Active Points)")
+                        st.dataframe(
+                            style_table_by_club(starting_xi[display_cols], team_col="Team"),
+                            use_container_width=True, hide_index=True,
+                            column_config={
+                                "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                                target_col: st.column_config.NumberColumn(f"Target ({target_col})", format="%.2f"),
+                                "VORP": st.column_config.NumberColumn("VORP", format="%.2f"),
+                                "Model_Edge": st.column_config.NumberColumn("Edge", format="%+.2f"),
+                            }
+                        )
+                        
+                        st.markdown(f"#### Projected Bench (Dead Budget)")
+                        st.dataframe(
+                            style_table_by_club(bench_squad[display_cols], team_col="Team"),
+                            use_container_width=True, hide_index=True,
+                            column_config={
+                                "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                                target_col: st.column_config.NumberColumn(f"Target ({target_col})", format="%.2f")
+                            }
+                        )
+                        
+                        # Metrik Finansial dan Poin
                         total_cost = optimal_squad["Cost"].sum()
-                        total_pts = optimal_squad["Total Points"].sum()
-                        st.metric("Expected Points & Budget", f"{total_pts} Pts", f"£{total_cost:.1f}M Utilized")
+                        xi_pts = starting_xi[target_col].sum()
+                        bench_pts = bench_squad[target_col].sum()
+                        bench_cost = bench_squad["Cost"].sum()
+                        
+                        st.markdown("---")
+                        m_col1, m_col2, m_col3 = st.columns(3)
+                        m_col1.metric("Starting XI Proj. Points", f"{xi_pts:.2f} Pts", help="The realistic ceiling of your active lineup.")
+                        m_col2.metric("Total Budget Utilized", f"£{total_cost:.1f}M", delta=f"£{opt_budget - total_cost:.1f}M In Bank", delta_color="normal")
+                        m_col3.metric("Bench Dead Budget", f"£{bench_cost:.1f}M", delta=f"{bench_pts:.2f} Pts Wasted", delta_color="inverse", help="Capital locked in the bench. Lower is generally better for budget efficiency.")
 
         # --- Multi-Horizon Planner ---
         with tab_horizon:
