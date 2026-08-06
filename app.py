@@ -715,27 +715,58 @@ if app_module == "FPL Decision Engine":
 
         # --- Multi-Horizon Planner ---
         with tab_horizon:
-            st.subheader("Multi-Horizon MILP Optimization (5–8 Gameweeks)")
+            st.subheader("Multi-Horizon MILP Optimization (5 to 8 Gameweeks)")
             st.info(
-                "Extends the single-week solver into a rolling dynamic program: it selects a squad "
-                "for every gameweek in the horizon simultaneously, tracks transfers made between "
-                "consecutive weeks, and only takes point hits when the projected gain outweighs the "
-                "-4 penalty."
+                "Extends the single-week solver into a rolling dynamic program selecting a squad "
+                "for every gameweek in the horizon simultaneously while tracking transfer penalties."
             )
-            horizon_weeks = st.slider("Planning horizon (gameweeks)", 5, 8, 5)
-            starting_ft = st.number_input("Free transfers currently banked", min_value=1, max_value=5, value=1)
+            horizon_weeks = st.slider("Planning horizon (gameweeks)", 5, 8, 5, key="horizon_slider_multi")
+            starting_ft = st.number_input("Free transfers currently banked", min_value=1, max_value=5, value=1, key="ft_input_multi")
 
             if st.button("Run Multi-Horizon Optimization"):
-                with st.spinner(f"Solving joint MILP across {horizon_weeks} gameweeks..."):
-                    horizon_df = display_data.copy()
-                    # Without live per-gameweek fixture projections wired in yet,
-                    # each week reuses ep_next as its projection column — replace
-                    # these with per-week Custom_xPts outputs once fixtures are loaded.
+                with st.spinner("Solving joint MILP across multiple gameweeks using Dixon-Coles projections..."):
+                    horizon_df = filtered_data[filtered_data["Availability"] == "Available"].copy()
                     projection_cols = []
-                    for w in range(1, horizon_weeks + 1):
-                        col_name = f"xPts_GW{w}"
-                        horizon_df[col_name] = pd.to_numeric(horizon_df["ep_next"], errors="coerce").fillna(0.0)
-                        projection_cols.append(col_name)
+                    
+                    if "matrix_results" in locals() and matrix_results:
+                        atk_lbl, atk_val = matrix_results["attack"]
+                        
+                        goal_pts = {"GKP": 6, "DEF": 6, "MID": 5, "FWD": 4}
+                        cs_pts = {"GKP": 4, "DEF": 4, "MID": 1, "FWD": 0}
+                        horizon_df["Goal_Weight"] = horizon_df["Position"].map(goal_pts)
+                        horizon_df["CS_Weight"] = horizon_df["Position"].map(cs_pts)
+                        
+                        games_played = (horizon_df["Minutes"] / 90.0).clip(lower=1.0)
+                        xg_per_gw = horizon_df["xG"] / games_played
+                        xa_per_gw = horizon_df["xA"] / games_played
+                        play_prob = (horizon_df["Chance_of_Playing"].fillna(100.0) / 100.0) * (horizon_df["Minutes"] / 2500.0).clip(lower=0.05, upper=1.0)
+
+                        for w in range(1, horizon_weeks + 1):
+                            col_name = f"xPts_GW{w}"
+                            gw_key = f"GW{w}"
+                            
+                            if gw_key in atk_val.columns:
+                                team_fdr_series = atk_val[gw_key]
+                                team_fdr = horizon_df["Team"].map(team_fdr_series)
+                                team_fdr = team_fdr.apply(lambda x: float(x) if pd.notna(x) and x != 99.0 else 3.5).fillna(3.5)
+                            else:
+                                team_fdr = 3.5
+                                
+                            fdr_factor = 3.5 / team_fdr
+                            base_gw = (
+                                2.0 + 
+                                (xg_per_gw * horizon_df["Goal_Weight"] * fdr_factor) + 
+                                (xa_per_gw * 3.0 * fdr_factor) + 
+                                (0.30 * horizon_df["CS_Weight"])
+                            ) * play_prob
+                            
+                            horizon_df[col_name] = base_gw.round(2)
+                            projection_cols.append(col_name)
+                    else:
+                        for w in range(1, horizon_weeks + 1):
+                            col_name = f"xPts_GW{w}"
+                            horizon_df[col_name] = pd.to_numeric(horizon_df["ep_next"], errors="coerce").fillna(0.0)
+                            projection_cols.append(col_name)
 
                     results = optimize_squad_multi_horizon(
                         horizon_df, projection_cols, budget=100.0,
@@ -747,11 +778,22 @@ if app_module == "FPL Decision Engine":
                     else:
                         st.success("Multi-horizon optimization complete.")
                         st.markdown("#### Gameweek-by-Gameweek Summary")
-                        st.dataframe(results["summary"], use_container_width=True)
+                        st.dataframe(results["summary"], use_container_width=True, hide_index=True)
 
                         gw_choice = st.selectbox("Inspect squad for gameweek", projection_cols)
-                        st.dataframe(results[gw_choice], use_container_width=True)
-
+                        selected_gw_df = results[gw_choice]
+                        
+                        display_cols = ["First Name", "Last Name", "Team", "Position", "Cost", gw_choice]
+                        st.dataframe(
+                            style_table_by_club(selected_gw_df[display_cols], team_col="Team"),
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                                gw_choice: st.column_config.NumberColumn(f"Projected xPts ({gw_choice})", format="%.2f"),
+                            }
+                        )
+                        
         # --- Stochastic Chip Evaluator ---
         with tab_chip:
             st.subheader("Live Squad Sync & Strategy Evaluation")
