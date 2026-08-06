@@ -2,56 +2,72 @@
 
 ## System Overview
 
-This repository houses an end-to-end, high-performance local analytics platform engineered specifically for the Premier League and UEFA Champions League. Designed with computational efficiency in mind, the system executes spatial tactical analysis, machine learning match forecasting, and deterministic mathematical optimization for Fantasy Premier League (FPL) directly on local hardware. The architecture is optimized to run seamlessly on standard environments, ensuring rapid execution without relying on heavy cloud databases.
+This repository houses an end-to-end, high-performance local analytics platform engineered specifically for the Premier League and UEFA Champions League. Designed with computational efficiency in mind, the system executes spatial tactical analysis, machine learning match forecasting, and deterministic mathematical optimization for Fantasy Premier League directly on local hardware. The architecture is optimized to run seamlessly on standard environments, ensuring rapid execution without relying on heavy cloud databases.
 
 ## 1. Data Engineering and ETL Pipeline
 
-The foundational layer of this system relies on an automated Extract, Transform, and Load (ETL) pipeline to guarantee that tactical models and optimization algorithms utilize the most recent match data.
+The foundational layer of this system relies on an automated Extract, Transform, and Load pipeline to guarantee that tactical models and optimization algorithms utilize the most recent match data.
 
 * Data Extraction
-The pipeline interfaces with public statistical repositories (FBref and Understat) using the `soccerdata` wrapper to scrape raw event data, including X and Y coordinates for shots and passes. Simultaneously, it queries the official FPL REST API endpoints to fetch live player valuations, injury statuses, and dynamic gameweek data.
+The pipeline interfaces with public statistical repositories using wrappers to scrape raw event data, including coordinates for shots and passes. Simultaneously, it queries the official FPL REST API endpoints to fetch live player valuations, injury statuses, and dynamic gameweek data.
 
 * Data Transformation
-Raw JSON and CSV outputs undergo rigorous normalization via `pandas`. Statistical outputs are adjusted to per-90-minute metrics to eliminate play-time bias. Expected Goals (xG) and Expected Assists (xA) variables are cleaned and merged with FPL pricing matrices to create unified player data frames.
+Raw outputs undergo rigorous normalization via pandas. Statistical outputs are adjusted to per-90-minute metrics to eliminate play-time bias. Expected Goals and Expected Assists variables are cleaned and merged with FPL pricing matrices to create unified player data frames.
 
-* Local Serialization (Load)
-To maximize memory efficiency and rapid disk read times, all processed data is serialized into Apache Parquet (`.parquet`) format using `pyarrow`. This approach compresses the database footprint to under 100MB, allowing lightweight code editors to handle the repository smoothly without memory overflow.
+* Local Serialization
+To maximize memory efficiency and rapid disk read times, all processed data is serialized into Apache Parquet format using pyarrow. This approach compresses the database footprint to under 100 megabytes, allowing lightweight code editors to handle the repository smoothly without memory overflow.
 
-## 2. Tactical Spatial Analysis Methodologies
+## 2. FPL Decision Engine Core Modules
 
-The system moves beyond basic aggregated statistics by quantifying the spatial value of on-ball actions.
+The Fantasy Premier League decision engine replaces emotional bias with deterministic Operations Research and advanced statistical modeling.
 
-* Expected Threat (xT) Grid Modeling
-The pitch is segmented into a 16x12 matrix. The model assigns a probability value to each zone representing the likelihood of scoring from that specific area. By analyzing passes and ball carries that move the ball from lower-value zones to higher-value zones, the system calculates a player's progressive tactical contribution prior to a shot being taken.
+* Market Analysis and VORP
+Calculates Value Over Replacement Player metrics per position using baseline costs and performance projections, filtering out small-sample outliers through customizable minutes thresholds.
 
-* Pass Network and Centrality Mapping
-Utilizing `mplsoccer` and graph theory, the platform constructs passing networks. Node size is dictated by the total volume of successful passes, while edge thickness represents the frequency of passing combinations between specific player pairs. This visualizes a team's build-up structure and identifies primary playmakers.
+* Advanced Fixture Matrix (Custom FDR)
+A logarithmic Dixon-Coles difficulty matrix mapping opponent strength versus team vulnerability. Features dynamic modulators for home advantage, European club congestion, and key player absences across attack and defense modules.
+
+* Custom Expected Points Engine
+Deterministic xPts projections utilizing underlying expected goal metrics modulated by dual-dimension Dixon-Coles matrices, player availability probabilities, and expected minutes factors.
+
+* MILP Squad Optimizer
+Executes Mixed-Integer Linear Programming via PuLP to generate the mathematically optimal 15-man squad under strict budget constraints, positional quotas, per-club limits, and user-defined vetos.
+
+* Multi-Horizon Dynamic Planner
+Extends the single-week solver into a rolling dynamic program selecting a squad for every gameweek in a five to eight week horizon simultaneously while tracking transfer penalties and banked free transfers.
+
+* Stochastic Chip Evaluator
+Synchronizes active FPL teams via ID and evaluates chip activation thresholds such as Wildcard or transfer penalty hits by comparing current squad projections against global mathematical optima.
+
+* Live Standings 2026/2027
+A full-height real-time league table monitoring actual club performance, goal differences, and current form to guide tactical decisions.
+
+## 3. Tactical Football Analyst Modules
+
+The platform includes a secondary suite dedicated to spatial deconstruction, machine learning scouting, and tactical matrix generation.
+
+* Pro Analytics and Lineups
+Processes multi-league metrics to generate predicted starting lineups and identify key playmakers through progressive passing and expected assist indexes.
 
 * K-Means Statistical Clustering
-Unsupervised machine learning (`scikit-learn`) is deployed to group players based on their multi-dimensional statistical profiles. This allows for advanced scouting and similarity searches, identifying lesser-known players who output identical underlying metrics to premium assets.
+Unsupervised machine learning groups players based on multi-dimensional statistical profiles to identify hidden tactical alternatives and transfer targets.
 
-## 3. Predictive Modeling and Stochastic Simulation
+* Spatial Pass Network and xT Grid
+Constructs passing networks using graph theory while evaluating pitch zones through an Expected Threat grid model that values pitch locations by proximity to goal and centrality.
 
-Match forecasting relies on rigorous mathematical probability rather than historical head-to-head biases.
+* Defensive Flank Vulnerability Matrix
+Splits conceded shots into left, central, and right thirds of the pitch to flag which flank a defense leaks the most expected goals against.
 
-* Poisson Regression Parameters
-Based on the foundational framework established by Dixon and Coles (1997), the model calculates Attack Strength and Defense Vulnerability for every team using rolling averages of xG and xGA. These parameters feed into a Poisson distribution to determine the exact probability of specific scorelines.
+* Match Simulator
+Combines Dixon-Coles Poisson regression with 10,000 Monte Carlo stochastic simulations to generate stable outcome probabilities and exact score matrices.
 
-* Monte Carlo Match Simulations
-To account for variance and unpredictability in football, the system executes 10,000 stochastic simulations for each upcoming fixture. This outputs stable, aggregated probabilities for Home Win, Draw, and Away Win, which are then rendered into interactive heatmap matrices.
+## 4. Future Roadmap and Advanced Theoretical Modules
 
-## 4. FPL Optimization via Operations Research
+* Quantitative Enhancements
+Integration of Expected Bonus Points models, portfolio theory for squad risk correlation, dynamic Elo ratings, and gradient boosting machine learning models for point predictions.
 
-The Fantasy Premier League decision engine replaces emotional bias with deterministic Operations Research methodologies.
-
-* Mixed-Integer Linear Programming (MILP)
-The core of the decision engine utilizes the `PuLP` library to solve multi-objective optimization problems. The objective function maximizes the total Expected Points (xPts) of a 15-man squad over a rolling 5-gameweek horizon.
-
-* Deterministic Constraints
-The MILP solver operates under strict FPL rules acting as algebraic constraints. These include the 100.0m budget limit, a maximum of three players per club, specific positional quotas (e.g., exactly two goalkeepers), and point deduction penalties for exceeding free transfers.
-
-* Automated Output Generation
-The engine outputs the mathematically optimal starting XI, captaincy choice, vice-captaincy, bench order, and precise transfer sequences required to navigate upcoming fixture difficulties.
+* Theoretical Frontiers
+Exploration of quantum annealing for combinatorial squad optimization, computer vision biomechanics, and multi-agent reinforcement learning.
 
 ## 5. Local Installation and Setup Guide
 
@@ -81,6 +97,3 @@ python update_engine.py
 ```bash
 streamlit run app.py
 ```
-
-The tactical dashboard will initialize and bind to `http://localhost:8501`.
-
