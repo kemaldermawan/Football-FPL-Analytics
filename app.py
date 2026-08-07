@@ -20,6 +20,7 @@ from src.scouting_engine import run_kmeans_clustering, find_similar_players
 from src.xt_model import build_xt_grid
 from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map, build_custom_fdr_matrix
 from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
+from src.decision_engine import get_optimal_captaincy, find_differentials
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -162,9 +163,9 @@ if app_module == "FPL Decision Engine":
             file_name="fpl_filtered_data.csv", mime="text/csv",
         )
 
-        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_standings = st.tabs([
+        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_standings, tab_tactical = st.tabs([
             "Market Analysis", "Advanced Fixture Matrix", "Custom xPts Model", "MILP Squad Optimizer",
-            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Live Standings",
+            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Live Standings", "Tactical Ops"
         ])
 
         # --- Market Analysis ---
@@ -513,6 +514,9 @@ if app_module == "FPL Decision Engine":
                 ) * play_prob
 
                 xpts_df["Proj_xPts"] = (base_xpts_per_gw * horizon).round(2)
+                
+                # INJEKSI VARIABEL BARU UNTUK 1-GW HORIZON
+                xpts_df["xPts_GW1"] = base_xpts_per_gw.round(2)
                 
                 # 4b. Kalibrasi Pembagi VORP (Dinaikkan dari 0.1 menjadi 0.5 sesuai batas pergerakan harga FPL)
                 xpts_df["Proj_Value"] = (xpts_df["Proj_xPts"] / (xpts_df["Cost"] - xpts_df["Base_Cost"]).clip(lower=0.5)).round(2)
@@ -877,6 +881,72 @@ if app_module == "FPL Decision Engine":
                 )
             except Exception as e:
                 st.error(f"Failed to render live standings table: {e}")
+
+        # --- Tactical Ops ---
+        with tab_tactical:
+            st.subheader("Tactical Operations (Captaincy & Differentials)")
+            st.info("Automated mathematical selection for captaincy armbands and low-ownership differential assets.")
+            
+            # Pemisahan variabel komputasi berdasarkan horizon waktu taktis
+            if "xpts_df" in locals() and "Proj_xPts" in xpts_df.columns:
+                tactical_df = xpts_df.copy()
+                cap_metric = "xPts_GW1" if "xPts_GW1" in tactical_df.columns else "ep_next"
+                diff_metric = "Proj_xPts"
+                st.success("System Status: Utilizing Advanced Dixon-Coles xPts Model.")
+            else:
+                tactical_df = filtered_data.copy()
+                cap_metric = "ep_next"
+                diff_metric = "ep_next"
+                st.warning("System Status: Utilizing basic FPL metrics. Render the 'Custom xPts Model' tab first to activate mathematical projections.")
+            
+            col_cap, col_diff = st.columns(2)
+            
+            with col_cap:
+                st.markdown("#### Optimal Captaincy Algorithm (1-GW Horizon)")
+                captaincy_picks = get_optimal_captaincy(tactical_df, target_metric=cap_metric, top_n=5)
+                
+                if not captaincy_picks.empty:
+                    # Mengonversi tipe data teks menjadi numerik secara eksplisit
+                    captaincy_picks[cap_metric] = pd.to_numeric(captaincy_picks[cap_metric], errors="coerce").fillna(0.0)
+                    
+                    # Menginjeksi komputasi pengali ganda khusus untuk simulasi kapten
+                    captaincy_picks["Capt_xPts_x2"] = captaincy_picks[cap_metric] * 2
+                    
+                    cap = captaincy_picks.iloc[0]
+                    vice_cap = captaincy_picks.iloc[1]
+                    
+                    st.success(f"**Captain (C):** {cap['First Name']} {cap['Last Name']} ({cap['Team']}) - {float(cap['Capt_xPts_x2']):.2f} Pts (Doubled)")
+                    st.warning(f"**Vice-Captain (VC):** {vice_cap['First Name']} {vice_cap['Last Name']} ({vice_cap['Team']}) - Backup Potential: {float(vice_cap['Capt_xPts_x2']):.2f} Pts")
+                    
+                    st.dataframe(
+                        style_table_by_club(captaincy_picks[["First Name", "Last Name", "Team", "Position", cap_metric, "Capt_xPts_x2"]], team_col="Team"),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            cap_metric: st.column_config.NumberColumn("Base Pts (GW1)", format="%.2f"),
+                            "Capt_xPts_x2": st.column_config.NumberColumn("Capt Pts (x2)", format="%.2f")
+                        }
+                    )
+                else:
+                    st.warning("Insufficient data for captaincy calculation.")
+            
+            with col_diff:
+                st.markdown("#### Hidden Differentials Engine (Medium-Term Horizon)")
+                max_own = st.slider("Max Ownership %", 1.0, 15.0, 5.0, 0.5)
+                
+                differentials_df = find_differentials(tactical_df, max_ownership=max_own, min_minutes=450, target_metric=diff_metric)
+                
+                if not differentials_df.empty:
+                    display_cols = ["First Name", "Last Name", "Team", "Position", "Ownership_Pct", diff_metric]
+                    st.dataframe(
+                        style_table_by_club(differentials_df.head(10)[display_cols], team_col="Team"),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            "Ownership_Pct": st.column_config.NumberColumn("Ownership", format="%.1f%%"),
+                            diff_metric: st.column_config.NumberColumn("Proj Pts (5-GW)", format="%.2f")
+                        }
+                    )
+                else:
+                    st.info("No differential players found under the current constraints.")
 
 # ===========================================================================
 # MODULE 2 — TACTICAL FOOTBALL ANALYST
