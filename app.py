@@ -20,7 +20,7 @@ from src.scouting_engine import run_kmeans_clustering, find_similar_players
 from src.xt_model import build_xt_grid
 from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map, build_custom_fdr_matrix
 from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
-from src.decision_engine import get_optimal_captaincy, find_differentials
+from src.decision_engine import get_optimal_captaincy, find_differentials, detect_fixture_anomalies
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -800,44 +800,90 @@ if app_module == "FPL Decision Engine":
 
         # --- Stochastic Chip Evaluator ---
         with tab_chip:
-            st.subheader("Live Squad Sync & Strategy Evaluation")
-            st.info("Synchronizes your active FPL team via ID and evaluates chip activation thresholds using custom expected points.")
+            st.subheader("Live Squad Sync & Special Chip Scheduling Simulator")
+            st.info("Synchronizes active FPL team to evaluate wildcard thresholds and maps DGW/BGW for optimal Free Hit or Bench Boost activation.")
+            
             fpl_team_id = st.text_input("Enter FPL Team ID (e.g., 123456)", key="chip_team_id_input")
             
+            # Matriks Deteksi Anomali Penjadwalan (DGW/BGW)
+            st.markdown("#### Fixture Density Matrix (DGW & BGW Mapper)")
+            
+            fixtures_full_df = get_all_fixtures()
+            fpl_teams_data = get_fpl_team_strengths()
+            
+            if not fixtures_full_df.empty and not fpl_teams_data.empty:
+                team_mapping = dict(zip(fpl_teams_data["id"], fpl_teams_data["name"]))
+                
+                # Mengasumsikan GW berjalan ada di parameter slider horizon (dapat diotomatisasi ke depan)
+                current_live_gw = st.number_input("Current Target Gameweek", min_value=1, max_value=38, value=1)
+                
+                density_map = detect_fixture_anomalies(fixtures_full_df, team_mapping, current_gw=current_live_gw, horizon=8)
+                
+                if density_map is not None:
+                    def apply_density_colors(val):
+                        if val == 0:
+                            return "background-color: #000000; color: #e74c3c; font-weight: 800;" # BGW
+                        elif val > 1:
+                            return "background-color: #1a522a; color: #f1c40f; font-weight: 800;" # DGW
+                        return "color: #ffffff;" # Normal GW
+                        
+                    st.dataframe(
+                        density_map.style.map(apply_density_colors),
+                        use_container_width=True,
+                        height=350
+                    )
+                    st.caption("⬛ Red (0) = Blank Gameweek (BGW) | 🟩 Yellow (2+) = Double Gameweek (DGW)")
+            else:
+                st.warning("Fixture database unavailable for density mapping.")
+
             if st.button("Evaluate Current Strategy", key="eval_chip_btn"):
                 if fpl_team_id:
-                    with st.spinner("Fetching live data and running stochastic evaluation..."):
+                    with st.spinner("Running stochastic evaluation and chip utility analysis..."):
                         squad_ids = fetch_manager_squad(fpl_team_id)
                         if squad_ids:
                             eval_df = filtered_data.copy()
-                            if "xpts_df" in locals() and "Proj_xPts" in xpts_df.columns:
+                            active_metric = "Proj_xPts" if ("xpts_df" in locals() and "Proj_xPts" in xpts_df.columns) else "ep_next"
+                            
+                            if active_metric == "Proj_xPts":
                                 eval_df["Proj_xPts"] = xpts_df["Proj_xPts"]
-                                active_metric = "Proj_xPts"
-                            else:
-                                active_metric = "ep_next"
-
+                                
                             my_squad = eval_df[eval_df["id"].isin(squad_ids)].copy()
                             st.success("Squad synchronized successfully.")
                             
                             display_cols = ["First Name", "Last Name", "Team", "Position", "Cost", active_metric]
                             st.dataframe(
                                 style_table_by_club(my_squad[display_cols], team_col="Team"),
-                                use_container_width=True, hide_index=True,
-                                column_config={
-                                    "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
-                                    active_metric: st.column_config.NumberColumn("Projected Target Pts", format="%.2f"),
-                                }
+                                use_container_width=True, hide_index=True
                             )
 
-                            st.markdown("#### Stochastic Chip Evaluator")
+                            st.markdown("#### Chip Utility & Wildcard Thresholds")
                             eval_results = evaluate_chip_strategy(eval_df, squad_ids, target_col=active_metric)
 
                             e_col1, e_col2, e_col3 = st.columns(3)
-                            e_col1.metric("Current xPts", eval_results["Current_Projected_Pts"])
-                            e_col2.metric("Optimal xPts", eval_results["Optimal_Projected_Pts"])
+                            e_col1.metric("Current active xPts", eval_results["Current_Projected_Pts"])
+                            e_col2.metric("Optimal solver xPts", eval_results["Optimal_Projected_Pts"])
                             e_col3.metric("Mathematical Delta", eval_results["Mathematical_Delta"])
 
-                            st.info(f"**Decision Engine Recommendation:** {eval_results['Engine_Recommendation']}")
+                            st.info(f"**Baseline Decision:** {eval_results['Engine_Recommendation']}")
+                            
+                            # Heuristik Dasar Free Hit dan Bench Boost
+                            if density_map is not None:
+                                squad_teams = my_squad["Team"].value_counts()
+                                target_gw_col = current_live_gw
+                                
+                                if target_gw_col in density_map.columns:
+                                    gw_density = density_map[target_gw_col]
+                                    active_players_count = sum([squad_teams.get(t, 0) for t in gw_density[gw_density > 0].index])
+                                    dgw_players_count = sum([squad_teams.get(t, 0) for t in gw_density[gw_density > 1].index])
+                                    
+                                    st.markdown("---")
+                                    st.markdown(f"**GW{target_gw_col} Specific Chip Analysis:**")
+                                    if active_players_count < 9:
+                                        st.warning(f"🚨 **FREE HIT RECOMMENDED:** You only have {active_players_count} active players this gameweek due to blanks.")
+                                    elif dgw_players_count >= 12:
+                                        st.success(f"🔥 **BENCH BOOST RECOMMENDED:** You have {dgw_players_count} players with a Double Gameweek. Maximize point ceiling.")
+                                    else:
+                                        st.write(f"Stable fixture conditions. Hold tactical chips. Active players: {active_players_count} | DGW players: {dgw_players_count}.")
                         else:
                             st.error("Invalid Team ID, private squad, or FPL API rate limit exceeded.")
                 else:
