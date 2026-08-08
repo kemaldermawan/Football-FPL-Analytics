@@ -21,6 +21,7 @@ from src.xt_model import build_xt_grid
 from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map, build_custom_fdr_matrix
 from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
 from src.decision_engine import get_optimal_captaincy, find_differentials, detect_fixture_anomalies
+from src.market_dynamics import calculate_price_momentum
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -176,6 +177,8 @@ if app_module == "FPL Decision Engine":
                 "Restricted to available players clearing a minutes threshold to avoid small-sample flukes."
             )
 
+            filtered_data = calculate_price_momentum(filtered_data)
+
             col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1.2, 1, 1])
             with col_ctrl1:
                 min_minutes = st.slider(
@@ -322,7 +325,7 @@ if app_module == "FPL Decision Engine":
 
             advanced_cols = [
                 "Minutes", "Availability", "Chance_of_Playing",
-                "Price_Change_GW", "Price_Change_Season", "Net_Transfers_GW",
+                "Price_Change_GW", "Price_Change_Season", "Net_Transfers_GW", "Market_Momentum", "Price_Forecast"
             ]
             if "Fixture_Run" in table_sorted.columns:
                 advanced_cols.append("Fixture_Run")
@@ -361,6 +364,8 @@ if app_module == "FPL Decision Engine":
                     "Price_Change_Season": st.column_config.NumberColumn("Price Δ (Season)", format="%+.1f"),
                     "Net_Transfers_GW": st.column_config.NumberColumn("Net Transfers (GW)", format="%+d"),
                     "Fixture_Run": st.column_config.TextColumn("Upcoming Fixtures", width="large"),
+                    "Market_Momentum": st.column_config.NumberColumn("Momentum Index", format="%.2f"),
+                    "Price_Forecast": st.column_config.TextColumn("Price Forecast"),
                 },
             )
             st.markdown("---")
