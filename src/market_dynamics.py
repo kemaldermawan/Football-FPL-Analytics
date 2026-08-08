@@ -35,3 +35,26 @@ def calculate_price_momentum(player_data):
     df["Price_Forecast"] = df["Market_Momentum"].apply(classify_trend)
     
     return df
+
+def calculate_long_term_value(player_data):
+    """
+    Kalkulasi metrik depresiasi aset dan nilai jual statis dari awal musim.
+    """
+    df = player_data.copy()
+    
+    # Menghitung harga dasar awal musim
+    df["Starting_Cost"] = df["Cost"] - df["Price_Change_Season"]
+    
+    def compute_sell_price(row):
+        cp = int(round(row["Cost"] * 10))
+        sp = int(round(row["Starting_Cost"] * 10))
+        profit = cp - sp
+        
+        if profit > 0:
+            return (sp + (profit // 2)) / 10.0
+        return cp / 10.0
+        
+    df["Sell_Value"] = df.apply(compute_sell_price, axis=1)
+    df["Value_Lost_To_Tax"] = (df["Cost"] - df["Sell_Value"]).round(1)
+    
+    return df

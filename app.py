@@ -21,7 +21,7 @@ from src.xt_model import build_xt_grid
 from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map, build_custom_fdr_matrix
 from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
 from src.decision_engine import get_optimal_captaincy, find_differentials, detect_fixture_anomalies
-from src.market_dynamics import calculate_price_momentum
+from src.market_dynamics import calculate_price_momentum, calculate_long_term_value
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -178,6 +178,7 @@ if app_module == "FPL Decision Engine":
             )
 
             filtered_data = calculate_price_momentum(filtered_data)
+            filtered_data = calculate_long_term_value(filtered_data)
 
             col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1.2, 1, 1])
             with col_ctrl1:
@@ -377,6 +378,32 @@ if app_module == "FPL Decision Engine":
             
             st.markdown("#### Accumulated Points per Team")
             st.altair_chart(create_team_bar_chart(table_data), use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("#### Long-Term Transfer Exchange Calculator")
+            st.caption("Simulate exact sell values and unrealized tax losses based on your specific purchase price.")
+            
+            col_calc1, col_calc2 = st.columns(2)
+            with col_calc1:
+                calc_player = st.selectbox("Select Asset for Sale Simulation", sorted(filtered_data["Last Name"].dropna().unique()))
+            with col_calc2:
+                player_row = filtered_data[filtered_data["Last Name"] == calc_player].iloc[0]
+                cur_cost = float(player_row["Cost"])
+                start_cost = float(player_row["Starting_Cost"])
+                user_buy_price = st.number_input(f"Your Purchase Price for {calc_player} (£M)", min_value=4.0, max_value=15.5, value=start_cost, step=0.1)
+                
+            p_cp = int(round(cur_cost * 10))
+            p_buy = int(round(user_buy_price * 10))
+            p_profit = p_cp - p_buy
+            
+            sell_price = user_buy_price + (p_profit // 2) / 10.0 if p_profit > 0 else cur_cost
+            tax_lost = cur_cost - sell_price
+            profit_margin = sell_price - user_buy_price
+            
+            c_m1, c_m2, c_m3 = st.columns(3)
+            c_m1.metric("Current Market Price", f"£{cur_cost:.1f}M")
+            c_m2.metric("Actual Sell Value", f"£{sell_price:.1f}M", delta=f"£{profit_margin:.1f}M Realized Profit", delta_color="normal")
+            c_m3.metric("FPL Market Tax (Lost Value)", f"£{tax_lost:.1f}M", delta="Unrealized Dead Budget", delta_color="inverse")
 
         # --- Advanced Fixture Matrix ---
         with tab_matrix:
