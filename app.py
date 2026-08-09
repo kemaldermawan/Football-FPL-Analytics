@@ -22,6 +22,7 @@ from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map, bui
 from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
 from src.decision_engine import get_optimal_captaincy, find_differentials, detect_fixture_anomalies
 from src.market_dynamics import calculate_price_momentum, calculate_long_term_value
+from src.risk_engine import calculate_rotation_risk
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -94,11 +95,18 @@ if app_module == "FPL Decision Engine":
     raw_data = get_fpl_players()
 
     if not raw_data.empty:
+        # Mekanisme pertahanan: injeksi variabel dinamis jika ETL belum diperbarui
+        if "yellow_cards" not in raw_data.columns:
+            raw_data["yellow_cards"] = 0
+        if "news" not in raw_data.columns:
+            raw_data["news"] = ""
+
         display_data = raw_data[[
             "id", "first_name", "second_name", "team_name", "position_name",
             "now_cost", "total_points", "ep_next", "minutes", "status",
             "chance_of_playing_next_round", "cost_change_event", "cost_change_start",
             "selected_by_percent", "transfers_in_event", "transfers_out_event",
+            "yellow_cards", "news"
         ]].copy()
         
         display_data["now_cost"] = display_data["now_cost"] / 10.0
@@ -164,9 +172,9 @@ if app_module == "FPL Decision Engine":
             file_name="fpl_filtered_data.csv", mime="text/csv",
         )
 
-        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_standings, tab_tactical = st.tabs([
+        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_risk, tab_standings, tab_tactical = st.tabs([
             "Market Analysis", "Advanced Fixture Matrix", "Custom xPts Model", "MILP Squad Optimizer",
-            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Live Standings", "Tactical Ops"
+            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Risk Management", "Live Standings", "Tactical Ops"
         ])
 
         # --- Market Analysis ---
@@ -959,6 +967,86 @@ if app_module == "FPL Decision Engine":
                 )
             except Exception as e:
                 st.error(f"Failed to render live standings table: {e}")
+
+        # --- Risk Management ---
+        with tab_risk:
+            st.subheader("Physical & Conditional Risk Management")
+            st.info("Algorithmic assessment integrating fatigue volume, UEFA scheduling, disciplinary suspension proximity, and medical telemetry.")
+            
+            # Kalkulasi Kepadatan Jadwal untuk Pengganda Dinamis
+            fixtures_full_df = get_all_fixtures()
+            fpl_teams_data = get_fpl_team_strengths()
+            
+            density_map = None
+            if not fixtures_full_df.empty and not fpl_teams_data.empty:
+                team_mapping = dict(zip(fpl_teams_data["id"], fpl_teams_data["name"]))
+                density_map = detect_fixture_anomalies(fixtures_full_df, team_mapping, current_gw=1, horizon=5)
+                
+            # Mendefinisikan partisipan kompetisi Eropa musim 2026/2027
+            uefa_clubs = [
+                "Arsenal", "Man City", "Man Utd", "Aston Villa", 
+                "Liverpool", "Bournemouth", "Sunderland", "Crystal Palace", "Brighton"
+            ]
+            
+            risk_data = calculate_rotation_risk(filtered_data, uefa_clubs, density_map=density_map, current_gw=1)
+            
+            col_r1, col_r2 = st.columns([1, 2])
+            with col_r1:
+                risk_tolerance = st.slider("Maximum Rotation Risk Tolerance (%)", 0, 100, 40, 5)
+            
+            st.markdown("#### Rotation & Disciplinary Vulnerability Matrix")
+            
+            display_risk_cols = [
+                "First Name", "Last Name", "Team", "Position", "Cost", 
+                "Minutes", "yellow_cards", "Rotation_Risk_Pct", "Risk_Category"
+            ]
+            
+            safe_players = risk_data[risk_data["Rotation_Risk_Pct"] <= risk_tolerance].sort_values("Rotation_Risk_Pct", ascending=False)
+            
+            st.dataframe(
+                style_table_by_club(safe_players[display_risk_cols], team_col="Team"),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                    "yellow_cards": st.column_config.NumberColumn("YCs"),
+                    "Rotation_Risk_Pct": st.column_config.ProgressColumn("Risk %", min_value=0, max_value=100, format="%d%%"),
+                }
+            )
+            
+            st.markdown("#### High-Risk Asset Warning (European Tax & Suspensions)")
+            danger_players = risk_data[risk_data["Risk_Category"].isin(["High Risk", "Suspension Risk"])].sort_values("Rotation_Risk_Pct", ascending=False)
+            if not danger_players.empty:
+                st.dataframe(
+                    style_table_by_club(danger_players[display_risk_cols], team_col="Team"),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                        "yellow_cards": st.column_config.NumberColumn("YCs"),
+                        "Rotation_Risk_Pct": st.column_config.NumberColumn("Risk %", format="%d%%"),
+                    }
+                )
+            else:
+                st.success("No high-risk or suspended assets detected in the current data pool.")
+                
+            st.markdown("---")
+            st.markdown("#### Real-Time Medical & Status Ward")
+            st.caption("Monitoring official FPL medical news and injury flag statuses.")
+            
+            medical_ward = risk_data[risk_data["Availability"] != "Available"][
+                ["First Name", "Last Name", "Team", "Availability", "Chance_of_Playing", "news"]
+            ]
+            
+            if not medical_ward.empty:
+                st.dataframe(
+                    style_table_by_club(medical_ward, team_col="Team"),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Chance_of_Playing": st.column_config.ProgressColumn("Chance to Play", min_value=0, max_value=100, format="%d%%"),
+                        "news": st.column_config.TextColumn("Medical Report", width="large")
+                    }
+                )
+            else:
+                st.info("No active medical alerts for the selected filters.")
 
         # --- Tactical Ops ---
         with tab_tactical:
