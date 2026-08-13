@@ -24,6 +24,7 @@ from src.decision_engine import get_optimal_captaincy, find_differentials, detec
 from src.market_dynamics import calculate_price_momentum, calculate_long_term_value
 from src.risk_engine import calculate_rotation_risk
 from src.backtest_engine import run_backtest_evaluation
+from src.weather_engine import fetch_matchday_weather, analyze_weather_impact
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -937,7 +938,7 @@ if app_module == "FPL Decision Engine":
             
             # Deteksi dinamis variasi nama kolom aktual untuk mencegah KeyError
             possible_actuals = [c for c in ["event_points", "Total_Points", "total_points", "Total Points"] if c in filtered_data.columns]
-            
+
             if not possible_actuals:
                 st.warning("Matriks poin aktual tidak ditemukan dalam kerangka data. Validasi dihentikan.")
             else:
@@ -1092,11 +1093,11 @@ if app_module == "FPL Decision Engine":
                 )
             else:
                 st.info("No active medical alerts for the selected filters.")
-
-        # --- Tactical Ops ---
+                
+# --- Tactical Ops ---
         with tab_tactical:
-            st.subheader("Tactical Operations (Captaincy & Differentials)")
-            st.info("Automated mathematical selection for captaincy armbands and low-ownership differential assets.")
+            st.subheader("Tactical Operations & Environmental Telemetry")
+            st.info("Automated mathematical selection for captaincy, differentials, and live stadium weather impact.")
             
             # Pemisahan variabel komputasi berdasarkan horizon waktu taktis
             if "xpts_df" in locals() and "Proj_xPts" in xpts_df.columns:
@@ -1153,11 +1154,44 @@ if app_module == "FPL Decision Engine":
                         use_container_width=True, hide_index=True,
                         column_config={
                             "Ownership_Pct": st.column_config.NumberColumn("Ownership", format="%.1f%%"),
-                            diff_metric: st.column_config.NumberColumn("Proj Pts (5-GW)", format="%.2f")
+                            diff_metric: st.column_config.NumberColumn("Proj Pts", format="%.2f")
                         }
                     )
                 else:
                     st.info("No differential players found under the current constraints.")
+
+            st.markdown("---")
+            
+            # --- Integrasi Modul Cuaca (Weather Engine) ---
+            st.markdown("#### Matchday Weather Radar")
+            st.caption("Live meteorological telemetry pulling directly from stadium geolocation parameters.")
+            
+            # Memastikan hanya tim yang terdaftar di pangkalan data yang dapat dipilih
+            available_teams = sorted(filtered_data["Team"].dropna().unique())
+            selected_stadium = st.selectbox("Select Home Stadium", available_teams)
+            
+            weather_data = fetch_matchday_weather(selected_stadium)
+            
+            if weather_data:
+                impact_data = analyze_weather_impact(weather_data)
+                
+                wt1, wt2, wt3 = st.columns(3)
+                wt1.metric("Temperature", f"{weather_data['Temperature_C']}°C")
+                wt2.metric("Wind Speed", f"{weather_data['Wind_Speed_kmh']} km/h")
+                wt3.metric("WMO Weather Code", weather_data['Weather_Code'])
+                
+                st.markdown("#### Algorithmic Tactical Impact")
+                
+                if "Optimal" in impact_data['Risk_Flag']:
+                    st.success(f"**Operational Risk Flag:** {impact_data['Risk_Flag']}")
+                else:
+                    st.error(f"**Operational Risk Flag:** {impact_data['Risk_Flag']}")
+                
+                col_i1, col_i2 = st.columns(2)
+                col_i1.metric("Home Attack Potential (xG Multiplier)", f"x{impact_data['xG_Multiplier']:.2f}")
+                col_i2.metric("Defensive Error Risk (xGA Multiplier)", f"x{impact_data['xGA_Multiplier']:.2f}")
+            else:
+                st.warning("Weather telemetry unavailable for the selected stadium.")
 
 # ===========================================================================
 # MODULE 2 — TACTICAL FOOTBALL ANALYST
