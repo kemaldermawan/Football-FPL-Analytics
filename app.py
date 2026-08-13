@@ -23,6 +23,7 @@ from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MU
 from src.decision_engine import get_optimal_captaincy, find_differentials, detect_fixture_anomalies
 from src.market_dynamics import calculate_price_momentum, calculate_long_term_value
 from src.risk_engine import calculate_rotation_risk
+from src.backtest_engine import run_backtest_evaluation
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -172,9 +173,9 @@ if app_module == "FPL Decision Engine":
             file_name="fpl_filtered_data.csv", mime="text/csv",
         )
 
-        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_risk, tab_standings, tab_tactical = st.tabs([
+        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_risk, tab_val, tab_standings, tab_tactical = st.tabs([
             "Market Analysis", "Advanced Fixture Matrix", "Custom xPts Model", "MILP Squad Optimizer",
-            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Risk Management", "Live Standings", "Tactical Ops"
+            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Risk Management", "Model Validation", "Live Standings", "Tactical Ops"
         ])
 
         # --- Market Analysis ---
@@ -928,6 +929,50 @@ if app_module == "FPL Decision Engine":
                             st.error("Invalid Team ID, private squad, or FPL API rate limit exceeded.")
                 else:
                     st.warning("Team ID is strictly required.")
+
+        # --- Model Validation ---
+        with tab_val:
+            st.subheader("Algorithmic Backtesting & Historical Model Validation")
+            st.info("Quantifies prediction error rates and statistical correlation against historical actual points.")
+            
+            # Deteksi dinamis variasi nama kolom aktual untuk mencegah KeyError
+            possible_actuals = [c for c in ["event_points", "Total_Points", "total_points", "Total Points"] if c in filtered_data.columns]
+            
+            if not possible_actuals:
+                st.warning("Matriks poin aktual tidak ditemukan dalam kerangka data. Validasi dihentikan.")
+            else:
+                col_v1, col_v2 = st.columns(2)
+                with col_v1:
+                    pred_opts = ["ep_next"]
+                    if "Proj_xPts" in filtered_data.columns:
+                        pred_opts.append("Proj_xPts")
+                    pred_metric = st.selectbox("Select Target Projection Metric", pred_opts)
+                with col_v2:
+                    act_metric = st.selectbox("Select Actual Baseline Metric", possible_actuals, index=0)
+                    
+                results = run_backtest_evaluation(filtered_data, predicted_col=pred_metric, actual_col=act_metric)
+                
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Mean Absolute Error (MAE)", results["MAE"])
+                m2.metric("Root Mean Sq. Error (RMSE)", results["RMSE"])
+                m3.metric("Pearson Correlation (r)", results["Correlation"])
+                m4.metric("Sample Size (Players)", results["Evaluated_Players"])
+                
+                st.markdown("#### Residual Error Analysis")
+                if "Detailed_DF" in results and results["Evaluated_Players"] > 0:
+                    res_df = results["Detailed_DF"]
+                    display_v_cols = ["First Name", "Last Name", "Team", "Position", "Cost", pred_metric, act_metric, "Error_Delta"]
+                    
+                    # Filter dinamis jika ada kolom tampilan yang belum direname di tahap sebelumnya
+                    safe_display_cols = [c for c in display_v_cols if c in res_df.columns]
+                    
+                    st.dataframe(
+                        style_table_by_club(res_df[safe_display_cols].sort_values("Error_Delta", ascending=False), team_col="Team"),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            "Error_Delta": st.column_config.NumberColumn("Residual Delta (Pred - Act)", format="%.2f")
+                        }
+                    )
 
         # --- Live Standings 2026/2027 ---
         with tab_standings:

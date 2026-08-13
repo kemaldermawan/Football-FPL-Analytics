@@ -47,7 +47,7 @@ def get_fpl_players():
         # 4. Seleksi kolom target secara komprehensif
         target_columns = [
             "id", "first_name", "second_name", "team_name", "position_name",
-            "now_cost", "total_points", "ep_next", "minutes", "status",
+            "now_cost", "total_points", "event_points", "ep_next", "minutes", "status",
             "chance_of_playing_next_round", "cost_change_event", "cost_change_start",
             "selected_by_percent", "transfers_in_event", "transfers_out_event",
             "form", "expected_goals", "expected_assists", "goals_scored", "assists",
