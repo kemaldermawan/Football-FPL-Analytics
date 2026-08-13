@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
+import gc
 
 from src.fetcher import get_fpl_players, get_team_rolling_form, get_fpl_team_strengths, get_next_opponent, get_fixture_run, get_season_status, get_all_fixtures
 from src.visuals import create_scatter_plot, create_team_bar_chart, create_pizza_chart, create_xpts_vs_cost_chart
@@ -26,6 +27,7 @@ from src.risk_engine import calculate_rotation_risk
 from src.backtest_engine import run_backtest_evaluation
 from src.weather_engine import fetch_matchday_weather, analyze_weather_impact
 from src.probabilistic_models import calculate_expected_bps, optimize_bench_order
+from src.portfolio_theory import calculate_squad_variance
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -1021,6 +1023,43 @@ if app_module == "FPL Decision Engine":
                 else:
                     st.info("No reserve outfield players found.")
 
+            st.markdown("---")
+            st.markdown("#### Portfolio Theory: Squad Variance Risk")
+            st.caption("Quantifies mathematical correlation risk exposure based on club concentration.")
+            
+            # Simulasi skuad 15 pemain berdasarkan proyeksi poin tertinggi
+            if "ep_next" in filtered_data.columns:
+                # Filter tipe data aman sebelum penyortiran
+                simulated_squad = filtered_data.copy()
+                simulated_squad["ep_next"] = pd.to_numeric(simulated_squad["ep_next"], errors="coerce").fillna(0.0)
+                simulated_squad = simulated_squad.sort_values("ep_next", ascending=False).head(15)
+                
+                variance_data = calculate_squad_variance(simulated_squad)
+                
+                v_col1, v_col2 = st.columns(2)
+                v_col1.metric("Total Variance Penalty", f"{variance_data['Total_Variance_Risk']:.2f}")
+                
+                # Modulasi warna teks peringatan berdasarkan tingkat risiko
+                risk_status = variance_data['Risk_Status']
+                if "High Risk" in risk_status:
+                    v_col2.error(f"**Risk Status:** {risk_status}")
+                elif "Moderate" in risk_status:
+                    v_col2.warning(f"**Risk Status:** {risk_status}")
+                else:
+                    v_col2.success(f"**Risk Status:** {risk_status}")
+                
+                st.markdown("**Simulated Asset Concentration by Club:**")
+                st.write(variance_data["Team_Concentration"])
+                
+                with st.expander("View Simulated 15-Man Squad"):
+                    safe_squad_cols = [c for c in ["First Name", "Last Name", "Team", "Position", "ep_next"] if c in simulated_squad.columns]
+                    st.dataframe(
+                        style_table_by_club(simulated_squad[safe_squad_cols], team_col="Team"),
+                        hide_index=True, use_container_width=True
+                    )
+            else:
+                st.warning("Prediction metric 'ep_next' unavailable for variance simulation.")
+
         # --- Live Standings 2026/2027 ---
         with tab_standings:
             st.subheader("Live Premier League Standings (2026/2027)")
@@ -1377,3 +1416,5 @@ elif app_module == "Tactical Football Analyst":
             score_matrix.style.background_gradient(cmap="YlGn", axis=None).format("{:.2%}"),
             use_container_width=True,
         )
+# Eksekusi pembersihan memori otomatis pada akhir siklus perenderan Streamlit
+gc.collect()
