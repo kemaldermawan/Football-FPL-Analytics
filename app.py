@@ -25,6 +25,7 @@ from src.market_dynamics import calculate_price_momentum, calculate_long_term_va
 from src.risk_engine import calculate_rotation_risk
 from src.backtest_engine import run_backtest_evaluation
 from src.weather_engine import fetch_matchday_weather, analyze_weather_impact
+from src.probabilistic_models import calculate_expected_bps, optimize_bench_order
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -174,9 +175,9 @@ if app_module == "FPL Decision Engine":
             file_name="fpl_filtered_data.csv", mime="text/csv",
         )
 
-        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_risk, tab_val, tab_standings, tab_tactical = st.tabs([
+        tab_market, tab_matrix, tab_xpts, tab_milp, tab_horizon, tab_chip, tab_risk, tab_val, tab_prob, tab_standings, tab_tactical = st.tabs([
             "Market Analysis", "Advanced Fixture Matrix", "Custom xPts Model", "MILP Squad Optimizer",
-            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Risk Management", "Model Validation", "Live Standings", "Tactical Ops"
+            "Multi-Horizon Planner", "Stochastic Chip Evaluator", "Risk Management", "Model Validation", "Advanced Probabilities", "Live Standings", "Tactical Ops"
         ])
 
         # --- Market Analysis ---
@@ -975,6 +976,51 @@ if app_module == "FPL Decision Engine":
                         }
                     )
 
+        # --- Advanced Probabilities ---
+        with tab_prob:
+            st.subheader("Advanced Quantitative & Probabilistic Models")
+            st.info("Algorithmic BPS projections and automated mathematical bench prioritization.")
+            
+            prob_data = calculate_expected_bps(filtered_data)
+            
+            st.markdown("#### Projected Bonus Points System (xBPS)")
+            st.caption("Linear algebraic evaluation of underlying expected statistics.")
+            
+            display_bps_cols = ["First Name", "Last Name", "Team", "Position", "expected_goals", "expected_assists", "Proj_xBPS", "Proj_Bonus_Points"]
+            top_bonus_assets = prob_data.sort_values("Proj_xBPS", ascending=False).head(15)
+            
+            st.dataframe(
+                style_table_by_club(top_bonus_assets[display_bps_cols], team_col="Team"),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Proj_xBPS": st.column_config.NumberColumn("xBPS Index", format="%.2f"),
+                    "Proj_Bonus_Points": st.column_config.NumberColumn("Proj Bonus Pts", format="%d")
+                }
+            )
+            
+            st.markdown("---")
+            st.markdown("#### Automated Bench Ordering Optimization")
+            st.caption("Prioritizes substitute order utilizing expected points multiplied by injury probability.")
+            
+            # Simulasi pengurutan bangku cadangan menggunakan aset berharga di bawah £5.0M
+            simulated_bench = prob_data[prob_data["Cost"] <= 5.0].head(10)
+            gkp_order, out_order = optimize_bench_order(simulated_bench)
+            
+            col_b1, col_b2 = st.columns([1, 2])
+            with col_b1:
+                st.markdown("**GK Substitute (Bench 1)**")
+                if not gkp_order.empty:
+                    st.dataframe(gkp_order[["Last Name", "Utility_Score"]], hide_index=True)
+                else:
+                    st.info("No reserve GK found in dataset.")
+            
+            with col_b2:
+                st.markdown("**Outfield Substitutes (Bench 2-4)**")
+                if not out_order.empty:
+                    st.dataframe(out_order[["First Name", "Last Name", "Position", "chance_of_playing", "Utility_Score"]], hide_index=True)
+                else:
+                    st.info("No reserve outfield players found.")
+
         # --- Live Standings 2026/2027 ---
         with tab_standings:
             st.subheader("Live Premier League Standings (2026/2027)")
@@ -1093,7 +1139,7 @@ if app_module == "FPL Decision Engine":
                 )
             else:
                 st.info("No active medical alerts for the selected filters.")
-                
+
 # --- Tactical Ops ---
         with tab_tactical:
             st.subheader("Tactical Operations & Environmental Telemetry")
