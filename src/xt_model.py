@@ -111,3 +111,41 @@ def compute_player_xt(actions_df: pd.DataFrame, grid: np.ndarray,
         .sort_values("Total_xT", ascending=False)
     )
     return summary
+    
+def simulate_player_xt_proxy(df):
+    """
+    Menghasilkan skor proxy xT untuk mendeteksi Deep-Lying Playmakers
+    karena absensi telemetri kordinat umpan dari API publik FPL.
+    """
+    xt_df = df.copy()
+    
+    # Injeksi tipe data aman
+    target_cols = ["expected_assists", "expected_goals", "minutes", "Cost"]
+    for col in target_cols:
+        if col not in xt_df.columns:
+            xt_df[col] = 0.0
+        xt_df[col] = pd.to_numeric(xt_df[col], errors="coerce").fillna(0.0)
+        
+    valid_players = xt_df[xt_df["minutes"] > 200].copy()
+    
+    def compute_xt_index(row):
+        pos = row.get("Position", "MID")
+        xa_per_90 = (row["expected_assists"] / row["minutes"]) * 90 if row["minutes"] > 0 else 0
+        xg_per_90 = (row["expected_goals"] / row["minutes"]) * 90 if row["minutes"] > 0 else 0
+        
+        # Gelandang menerima bobot spasial lebih tinggi karena mereka menginisiasi progresi sentral
+        pos_multiplier = 1.4 if pos == "MID" else (1.1 if pos == "DEF" else 0.8)
+        
+        # Formula heuristik untuk estimasi ancaman spasial
+        xt_index = ((xa_per_90 * 2.5) + (xg_per_90 * 0.5)) * pos_multiplier
+        
+        # Penyesuaian nilai investasi (Value Metric)
+        xt_value = xt_index / (row["Cost"] - 4.0 + 0.1) if row["Cost"] > 4.0 else xt_index
+        
+        return round(xt_index, 3), round(xt_value, 3)
+
+    valid_players[["xT_Index_per90", "xT_Value_Ratio"]] = valid_players.apply(
+        lambda row: pd.Series(compute_xt_index(row)), axis=1
+    )
+    
+    return valid_players.sort_values("xT_Index_per90", ascending=False)
