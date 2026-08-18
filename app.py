@@ -28,6 +28,9 @@ from src.backtest_engine import run_backtest_evaluation
 from src.weather_engine import fetch_matchday_weather, analyze_weather_impact
 from src.probabilistic_models import calculate_expected_bps, optimize_bench_order
 from src.portfolio_theory import calculate_squad_variance
+from src.probabilistic_models import calculate_expected_bps, optimize_bench_order
+from src.portfolio_theory import calculate_squad_variance
+from src.ml_engine import train_and_predict_points
 
 st.set_page_config(
     page_title="Football Intelligence Hub",
@@ -1059,6 +1062,32 @@ if app_module == "FPL Decision Engine":
                     )
             else:
                 st.warning("Prediction metric 'ep_next' unavailable for variance simulation.")
+
+            st.markdown("---")
+            st.markdown("#### Machine Learning Projection (Gradient Boosting)")
+            st.caption("Trains a lightweight decision tree ensemble on-the-fly to predict season points based on underlying metrics.")
+            
+            with st.spinner("Training machine learning model..."):
+                ml_results = train_and_predict_points(filtered_data)
+                
+                if "ML_Proj_Pts" in ml_results.columns:
+                    ml_display_cols = ["First Name", "Last Name", "Team", "Position", "Cost", "Total Points", "ML_Proj_Pts"]
+                    
+                    # Filter dinamis untuk keamanan indeks
+                    safe_ml_cols = [c for c in ml_display_cols if c in ml_results.columns]
+                    top_ml_picks = ml_results.sort_values("ML_Proj_Pts", ascending=False).head(15)
+                    
+                    st.dataframe(
+                        style_table_by_club(top_ml_picks[safe_ml_cols], team_col="Team"),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            "Cost": st.column_config.NumberColumn("Cost", format="£%.1fM"),
+                            "Total Points": st.column_config.NumberColumn("Actual Pts"),
+                            "ML_Proj_Pts": st.column_config.NumberColumn("ML Predicted Pts", format="%.2f")
+                        }
+                    )
+                else:
+                    st.warning("Insufficient data to train the ML model. Ensure minutes filter is broad enough.")
 
         # --- Live Standings 2026/2027 ---
         with tab_standings:
