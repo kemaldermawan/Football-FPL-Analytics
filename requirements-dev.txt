@@ -1,0 +1,5 @@
+-r requirements.txt
+
+pytest==9.1.1
+pytest-html==4.0.2
+pytest-xdist==3.8.0
