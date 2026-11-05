@@ -4,12 +4,12 @@ import numpy as np
 import altair as alt
 import gc
 
-from src.fetcher import get_fpl_players, get_team_rolling_form, get_fpl_team_strengths, get_next_opponent, get_fixture_run, get_season_status, get_all_fixtures
+from src.fetcher import get_fpl_players, get_fpl_team_strengths, get_next_opponent, get_fixture_run, get_season_status, get_all_fixtures
 from src.visuals import create_scatter_plot, create_team_bar_chart, create_pizza_chart, create_xpts_vs_cost_chart
 from src.club_colors import style_table_by_club
 from src.tactical import draw_pass_network
 from src.predictor import (
-    compute_team_strengths, expected_goals, generate_score_matrix,
+    compute_team_strengths_from_results, expected_goals, generate_score_matrix,
     calculate_match_odds, calculate_clean_sheet_probability, run_monte_carlo,
 )
 from src.analytics_engine import (
@@ -427,7 +427,6 @@ if app_module == "FPL Decision Engine":
             st.info("Logarithmic Dixon-Coles difficulty matrix mapping opponent strength vs team vulnerability (1.0 = Easiest, 6.0+ = Brutal). Split into Attack and Defense modules.")
 
             fixtures_full_df = get_all_fixtures()
-            team_form_data = get_team_rolling_form()
 
             if fixtures_full_df.empty:
                 st.warning("Fixture data is empty. Run `update_engine.py` to populate full fixtures.")
@@ -440,15 +439,19 @@ if app_module == "FPL Decision Engine":
 
                 fpl_teams = get_fpl_team_strengths()
                 team_id_map = dict(zip(fpl_teams["id"], fpl_teams["name"]))
+                short_name_map = dict(zip(fpl_teams["name"], fpl_teams["short_name"]))
 
-                dc_strengths = compute_team_strengths(team_form_data)
-                
-                if dc_strengths.empty or len(dc_strengths) < 20:
+                # Ratings from actual results, shrunk toward FPL's official team ratings
+                dc_strengths = compute_team_strengths_from_results(fixtures_full_df, fpl_teams)
+
+                if dc_strengths.empty:
                     dc_strengths = pd.DataFrame({
                         "Team": fpl_teams["name"],
-                        "Attack_Strength": fpl_teams["strength"] / 3.0,
-                        "Defense_Vulnerability": 3.0 / fpl_teams["strength"]
+                        "Attack_Strength": 1.0,
+                        "Defense_Vulnerability": 1.0
                     })
+                else:
+                    st.caption(f"Team ratings: {int(dc_strengths['Matches_Played'].sum() // 2)} finished matches, shrunk toward FPL's official ratings.")
 
                 # 3. Definisi Array European Clubs Musim 2026/2027
                 uefa_clubs = [
@@ -467,7 +470,8 @@ if app_module == "FPL Decision Engine":
                 matrix_results = build_custom_fdr_matrix(
                     fixtures_full_df, dc_strengths, team_id_map, 
                     european_teams=uefa_clubs, key_absences=key_absences_map,
-                    gamma=fdr_gamma, home_adv=fdr_home_adv, away_adv=fdr_away_adv
+                    gamma=fdr_gamma, home_adv=fdr_home_adv, away_adv=fdr_away_adv,
+                    short_names=short_name_map
                 )
 
                 if matrix_results:
@@ -1408,19 +1412,18 @@ elif app_module == "Tactical Football Analyst":
     with tab_sim:
         st.markdown("### Match Simulator (Dixon-Coles Poisson & Monte Carlo)")
 
-        team_form = get_team_rolling_form()
-        use_dynamic = not team_form.empty
+        strengths = compute_team_strengths_from_results(get_all_fixtures(), get_fpl_team_strengths())
+        use_dynamic = not strengths.empty
 
         if use_dynamic:
-            strengths = compute_team_strengths(team_form)
             team_options = sorted(strengths["Team"].unique())
             col_h, col_a = st.columns(2)
             home_team = col_h.selectbox("Home Team", team_options, index=0)
             away_team = col_a.selectbox("Away Team", team_options, index=min(1, len(team_options) - 1))
             home_xg, away_xg = expected_goals(home_team, away_team, strengths)
-            st.caption(f"Derived from rolling form: Home xG={home_xg:.2f}, Away xG={away_xg:.2f}")
+            st.caption(f"Derived from {int(strengths['Matches_Played'].sum() // 2)} finished matches (shrunk toward FPL ratings): Home xG={home_xg:.2f}, Away xG={away_xg:.2f}")
         else:
-            st.info("Rolling team-form table not found — falling back to manual xG sliders. Run `update_engine.py` to enable dynamic team-strength ratings.")
+            st.info("Team ratings unavailable — falling back to manual xG sliders. Run `update_engine.py` to download team and fixture data.")
             col1, col2 = st.columns(2)
             home_xg = col1.slider("Home Team Expected Goals (xG)", 0.1, 4.0, 1.5, 0.1)
             away_xg = col2.slider("Away Team Expected Goals (xG)", 0.1, 4.0, 1.2, 0.1)

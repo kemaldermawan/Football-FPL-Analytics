@@ -132,13 +132,29 @@ def compute_custom_xpts(players_df: pd.DataFrame,
     return df
 
 
-def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFrame, team_map: dict, european_teams: list = None, key_absences: dict = None, gamma: float = 1.25, home_adv: float = -0.25, away_adv: float = 0.25) -> dict:
+def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFrame, team_map: dict, european_teams: list = None, key_absences: dict = None, gamma: float = 1.25, home_adv: float = -0.25, away_adv: float = 0.25, short_names: dict = None) -> dict:
     """
-    Builds Attack and Defense FDR matrices leveraging Dixon-Coles parameters.
-    Returns a dictionary containing dual pivot tables.
+    Builds Attack and Defense FDR matrices from Dixon-Coles style ratings.
+    Returns a dictionary containing dual pivot tables: (labels, values).
+
+    Scale: higher FDR = HARDER fixture (1.0 easiest ... 6.99 hardest), and
+    3.5 is the fixture against a league-average opponent at a neutral venue.
+
+    A team's fixture difficulty depends on the OPPONENT only (its own
+    strength already shows up in its players' per-90 numbers, so counting
+    it here would double-count):
+      * Attack FDR  - how hard it is to score: tough when the opponent's
+        Defense_Vulnerability is LOW (solid defence).
+      * Defense FDR - how hard it is to keep a clean sheet: tough when the
+        opponent's Attack_Strength is HIGH.
+    Context modifiers (European rotation, key absences, short rest) adjust a
+    team's own ratings, so they change the difficulty its OPPONENTS face.
     """
+    EPS = 0.01  # floor before log() so a near-zero rating cannot blow up
+
     if european_teams is None: european_teams = []
     if key_absences is None: key_absences = {}
+    if short_names is None: short_names = {}
 
     upcoming = fixtures_df[fixtures_df["finished"] == False].copy()
     if upcoming.empty or strengths_df.empty:
@@ -170,8 +186,8 @@ def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFram
             last_match_tracker[home_team] = match_time
             last_match_tracker[away_team] = match_time
 
-        home_str = str_dict.get(home_team, default_str).copy()
-        away_str = str_dict.get(away_team, default_str).copy()
+        home_str = dict(str_dict.get(home_team, default_str))
+        away_str = dict(str_dict.get(away_team, default_str))
 
         if home_team in european_teams:
             home_str["Attack_Strength"] *= 0.95
@@ -193,22 +209,17 @@ def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFram
         away_lambda = away_str["Attack_Strength"] / away_rest_mod
         away_nu = away_str["Defense_Vulnerability"] * away_rest_mod
 
-        # ATTACK FDR (Tingkat kesulitan mencetak gol)
-        h_atk_ratio = away_nu / max(home_lambda, 0.01)
-        a_atk_ratio = home_nu / max(away_lambda, 0.01)
-        
-        # DEFENSE FDR (Tingkat kesulitan mencegah gol)
-        h_def_ratio = away_lambda / max(home_nu, 0.01)
-        a_def_ratio = home_lambda / max(away_nu, 0.01)
+        # ATTACK FDR: scoring is harder against a SOLID defence (low nu)
+        home_atk_fdr = np.clip(3.5 - gamma * np.log(max(away_nu, EPS)) + home_adv, 1.0, 6.99)
+        away_atk_fdr = np.clip(3.5 - gamma * np.log(max(home_nu, EPS)) + away_adv, 1.0, 6.99)
 
-        home_atk_fdr = np.clip(3.5 + gamma * np.log(h_atk_ratio) + home_adv, 1.0, 6.99)
-        away_atk_fdr = np.clip(3.5 + gamma * np.log(a_atk_ratio) + away_adv, 1.0, 6.99)
-        
-        home_def_fdr = np.clip(3.5 + gamma * np.log(h_def_ratio) + home_adv, 1.0, 6.99)
-        away_def_fdr = np.clip(3.5 + gamma * np.log(a_def_ratio) + away_adv, 1.0, 6.99)
+        # DEFENSE FDR: a clean sheet is harder against a POTENT attack (high lambda)
+        home_def_fdr = np.clip(3.5 + gamma * np.log(max(away_lambda, EPS)) + home_adv, 1.0, 6.99)
+        away_def_fdr = np.clip(3.5 + gamma * np.log(max(home_lambda, EPS)) + away_adv, 1.0, 6.99)
 
-        home_code = home_team[:3].upper()
-        away_code = away_team[:3].upper()
+        # Official FPL short names (MCI / MUN) avoid collisions like MAN / MAN
+        home_code = short_names.get(home_team, home_team[:3].upper())
+        away_code = short_names.get(away_team, away_team[:3].upper())
 
         gw_str = f"GW{int(gw)}"
         atk_rows.extend([
@@ -233,5 +244,5 @@ def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFram
 
     atk_lbl, atk_val = build_pivots(atk_rows)
     def_lbl, def_val = build_pivots(def_rows)
-    
+
     return {"attack": (atk_lbl, atk_val), "defense": (def_lbl, def_val)}
