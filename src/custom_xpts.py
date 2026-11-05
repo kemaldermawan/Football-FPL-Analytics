@@ -132,6 +132,80 @@ def compute_custom_xpts(players_df: pd.DataFrame,
     return df
 
 
+def iter_fixture_ratings(fixtures_df: pd.DataFrame, strengths_df: pd.DataFrame, team_map: dict, european_teams: list = None, key_absences: dict = None):
+    """
+    Yields one dict per upcoming (unfinished) fixture with the context-adjusted
+    ratings of both teams. Shared by the FDR matrix and the xPts engine so that
+    European rotation, key absences and short-rest effects are defined once.
+
+    Keys: gw, home, away, and for each side the adjusted `*_lambda` (attack)
+    and `*_nu` (defence vulnerability) plus the unadjusted `*_lambda_base` /
+    `*_nu_base` taken straight from strengths_df.
+    """
+    if european_teams is None: european_teams = []
+    if key_absences is None: key_absences = {}
+
+    upcoming = fixtures_df[fixtures_df["finished"] == False].copy()
+    if upcoming.empty or strengths_df.empty:
+        return
+
+    upcoming["Home_Team"] = upcoming["team_h"].map(team_map)
+    upcoming["Away_Team"] = upcoming["team_a"].map(team_map)
+    upcoming = upcoming.dropna(subset=["Home_Team", "Away_Team"])
+    upcoming["kickoff_time"] = pd.to_datetime(upcoming["kickoff_time"], errors="coerce", utc=True)
+    upcoming = upcoming.sort_values("kickoff_time")
+
+    str_dict = strengths_df.set_index("Team").to_dict(orient="index")
+    default_str = {"Attack_Strength": 1.0, "Defense_Vulnerability": 1.0}
+    last_match_tracker = {}
+
+    for _, fx in upcoming.iterrows():
+        gw = fx.get("event")
+        if pd.isna(gw): continue
+
+        home_team, away_team = fx["Home_Team"], fx["Away_Team"]
+        match_time = fx["kickoff_time"]
+
+        home_rest = (match_time - last_match_tracker.get(home_team, match_time - pd.Timedelta(days=7))).total_seconds() / 86400 if pd.notna(match_time) else 7.0
+        away_rest = (match_time - last_match_tracker.get(away_team, match_time - pd.Timedelta(days=7))).total_seconds() / 86400 if pd.notna(match_time) else 7.0
+
+        if pd.notna(match_time):
+            last_match_tracker[home_team] = match_time
+            last_match_tracker[away_team] = match_time
+
+        home_base = str_dict.get(home_team, default_str)
+        away_base = str_dict.get(away_team, default_str)
+        home_str = dict(home_base)
+        away_str = dict(away_base)
+
+        if home_team in european_teams:
+            home_str["Attack_Strength"] *= 0.95
+            home_str["Defense_Vulnerability"] *= 1.05
+        if away_team in european_teams:
+            away_str["Attack_Strength"] *= 0.95
+            away_str["Defense_Vulnerability"] *= 1.05
+
+        home_str["Attack_Strength"] *= (1.0 - key_absences.get(home_team, 0.0))
+        home_str["Defense_Vulnerability"] *= (1.0 + key_absences.get(home_team, 0.0))
+        away_str["Attack_Strength"] *= (1.0 - key_absences.get(away_team, 0.0))
+        away_str["Defense_Vulnerability"] *= (1.0 + key_absences.get(away_team, 0.0))
+
+        home_rest_mod = 1.10 if (home_rest < 4.0 and (away_rest - home_rest) >= 2.0) else 1.0
+        away_rest_mod = 1.10 if (away_rest < 4.0 and (home_rest - away_rest) >= 2.0) else 1.0
+
+        yield {
+            "gw": int(gw), "home": home_team, "away": away_team,
+            "home_lambda": home_str["Attack_Strength"] / home_rest_mod,
+            "home_nu": home_str["Defense_Vulnerability"] * home_rest_mod,
+            "away_lambda": away_str["Attack_Strength"] / away_rest_mod,
+            "away_nu": away_str["Defense_Vulnerability"] * away_rest_mod,
+            "home_lambda_base": home_base["Attack_Strength"],
+            "home_nu_base": home_base["Defense_Vulnerability"],
+            "away_lambda_base": away_base["Attack_Strength"],
+            "away_nu_base": away_base["Defense_Vulnerability"],
+        }
+
+
 def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFrame, team_map: dict, european_teams: list = None, key_absences: dict = None, gamma: float = 1.25, home_adv: float = -0.25, away_adv: float = 0.25, short_names: dict = None) -> dict:
     """
     Builds Attack and Defense FDR matrices from Dixon-Coles style ratings.
@@ -151,77 +225,26 @@ def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFram
     team's own ratings, so they change the difficulty its OPPONENTS face.
     """
     EPS = 0.01  # floor before log() so a near-zero rating cannot blow up
-
-    if european_teams is None: european_teams = []
-    if key_absences is None: key_absences = {}
     if short_names is None: short_names = {}
 
-    upcoming = fixtures_df[fixtures_df["finished"] == False].copy()
-    if upcoming.empty or strengths_df.empty:
-        return {}
-
-    upcoming["Home_Team"] = upcoming["team_h"].map(team_map)
-    upcoming["Away_Team"] = upcoming["team_a"].map(team_map)
-    upcoming = upcoming.dropna(subset=["Home_Team", "Away_Team"])
-    upcoming["kickoff_time"] = pd.to_datetime(upcoming["kickoff_time"], errors="coerce", utc=True)
-    upcoming = upcoming.sort_values("kickoff_time")
-
-    str_dict = strengths_df.set_index("Team").to_dict(orient="index")
-    default_str = {"Attack_Strength": 1.0, "Defense_Vulnerability": 1.0}
-
     atk_rows, def_rows = [], []
-    last_match_tracker = {}
 
-    for _, fx in upcoming.iterrows():
-        gw = fx.get("event")
-        if pd.isna(gw): continue
-
-        home_team, away_team = fx["Home_Team"], fx["Away_Team"]
-        match_time = fx["kickoff_time"]
-
-        home_rest = (match_time - last_match_tracker.get(home_team, match_time - pd.Timedelta(days=7))).total_seconds() / 86400 if pd.notna(match_time) else 7.0
-        away_rest = (match_time - last_match_tracker.get(away_team, match_time - pd.Timedelta(days=7))).total_seconds() / 86400 if pd.notna(match_time) else 7.0
-
-        if pd.notna(match_time):
-            last_match_tracker[home_team] = match_time
-            last_match_tracker[away_team] = match_time
-
-        home_str = dict(str_dict.get(home_team, default_str))
-        away_str = dict(str_dict.get(away_team, default_str))
-
-        if home_team in european_teams:
-            home_str["Attack_Strength"] *= 0.95
-            home_str["Defense_Vulnerability"] *= 1.05
-        if away_team in european_teams:
-            away_str["Attack_Strength"] *= 0.95
-            away_str["Defense_Vulnerability"] *= 1.05
-
-        home_str["Attack_Strength"] *= (1.0 - key_absences.get(home_team, 0.0))
-        home_str["Defense_Vulnerability"] *= (1.0 + key_absences.get(home_team, 0.0))
-        away_str["Attack_Strength"] *= (1.0 - key_absences.get(away_team, 0.0))
-        away_str["Defense_Vulnerability"] *= (1.0 + key_absences.get(away_team, 0.0))
-
-        home_rest_mod = 1.10 if (home_rest < 4.0 and (away_rest - home_rest) >= 2.0) else 1.0
-        away_rest_mod = 1.10 if (away_rest < 4.0 and (home_rest - away_rest) >= 2.0) else 1.0
-
-        home_lambda = home_str["Attack_Strength"] / home_rest_mod
-        home_nu = home_str["Defense_Vulnerability"] * home_rest_mod
-        away_lambda = away_str["Attack_Strength"] / away_rest_mod
-        away_nu = away_str["Defense_Vulnerability"] * away_rest_mod
+    for r in iter_fixture_ratings(fixtures_df, strengths_df, team_map, european_teams, key_absences):
+        home_team, away_team = r["home"], r["away"]
 
         # ATTACK FDR: scoring is harder against a SOLID defence (low nu)
-        home_atk_fdr = np.clip(3.5 - gamma * np.log(max(away_nu, EPS)) + home_adv, 1.0, 6.99)
-        away_atk_fdr = np.clip(3.5 - gamma * np.log(max(home_nu, EPS)) + away_adv, 1.0, 6.99)
+        home_atk_fdr = np.clip(3.5 - gamma * np.log(max(r["away_nu"], EPS)) + home_adv, 1.0, 6.99)
+        away_atk_fdr = np.clip(3.5 - gamma * np.log(max(r["home_nu"], EPS)) + away_adv, 1.0, 6.99)
 
         # DEFENSE FDR: a clean sheet is harder against a POTENT attack (high lambda)
-        home_def_fdr = np.clip(3.5 + gamma * np.log(max(away_lambda, EPS)) + home_adv, 1.0, 6.99)
-        away_def_fdr = np.clip(3.5 + gamma * np.log(max(home_lambda, EPS)) + away_adv, 1.0, 6.99)
+        home_def_fdr = np.clip(3.5 + gamma * np.log(max(r["away_lambda"], EPS)) + home_adv, 1.0, 6.99)
+        away_def_fdr = np.clip(3.5 + gamma * np.log(max(r["home_lambda"], EPS)) + away_adv, 1.0, 6.99)
 
         # Official FPL short names (MCI / MUN) avoid collisions like MAN / MAN
         home_code = short_names.get(home_team, home_team[:3].upper())
         away_code = short_names.get(away_team, away_team[:3].upper())
 
-        gw_str = f"GW{int(gw)}"
+        gw_str = f"GW{r['gw']}"
         atk_rows.extend([
             {"Team": home_team, "GW": gw_str, "Label": f"{away_code} (H)", "FDR": home_atk_fdr},
             {"Team": away_team, "GW": gw_str, "Label": f"{home_code} (A)", "FDR": away_atk_fdr}
@@ -230,6 +253,9 @@ def build_custom_fdr_matrix(fixtures_df: pd.DataFrame, strengths_df: pd.DataFram
             {"Team": home_team, "GW": gw_str, "Label": f"{away_code} (H)", "FDR": home_def_fdr},
             {"Team": away_team, "GW": gw_str, "Label": f"{home_code} (A)", "FDR": away_def_fdr}
         ])
+
+    if not atk_rows:
+        return {}
 
     def build_pivots(rows_list):
         df = pd.DataFrame(rows_list)

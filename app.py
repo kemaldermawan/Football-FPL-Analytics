@@ -20,6 +20,7 @@ from src.fpl_solver import optimize_squad, optimize_squad_multi_horizon, fetch_m
 from src.scouting_engine import run_kmeans_clustering, find_similar_players
 from src.xt_model import build_xt_grid
 from src.custom_xpts import compute_custom_xpts, build_opponent_defense_map, build_custom_fdr_matrix
+from src.xpts_engine import build_fixture_expectations, compute_xpts_matrix
 from src.config import COLOR_BG, COLOR_PANEL, COLOR_ACCENT, COLOR_TEXT, COLOR_MUTED, POSITION_ORDER
 from src.decision_engine import get_optimal_captaincy, find_differentials, detect_fixture_anomalies
 from src.market_dynamics import calculate_price_momentum, calculate_long_term_value
@@ -474,6 +475,15 @@ if app_module == "FPL Decision Engine":
                     short_names=short_name_map
                 )
 
+                fixture_table = build_fixture_expectations(
+                    fixtures_full_df, dc_strengths, team_id_map,
+                    european_teams=uefa_clubs, key_absences=key_absences_map
+                )
+                team_matches = (
+                    dc_strengths.set_index("Team")["Matches_Played"].to_dict()
+                    if "Matches_Played" in dc_strengths.columns else {}
+                )
+
                 if matrix_results:
                     horizon_weeks = st.slider("Projection Horizon (Gameweeks)", min_value=5, max_value=38, value=12, step=1)
                     
@@ -524,59 +534,30 @@ if app_module == "FPL Decision Engine":
                 with col_xp1:
                     horizon = st.slider("Projection Horizon (Gameweeks)", min_value=1, max_value=8, value=5, key="xpts_horizon")
 
-                # 1. Ekstraksi dan Pemetaan Rata-rata FDR per Klub
+                # 1. FDR rata-rata per klub (hanya untuk tampilan; BGW dikecualikan)
                 atk_lbl, atk_val = matrix_results["attack"]
                 def_lbl, def_val = matrix_results["defense"]
                 upcoming_gws = list(atk_val.columns)[:horizon]
 
-                team_atk_fdr = atk_val[upcoming_gws].mean(axis=1)
-                team_def_fdr = def_val[upcoming_gws].mean(axis=1)
+                def _mean_fdr(val_df):
+                    block = val_df[upcoming_gws]
+                    return block.where(block < 99.0).mean(axis=1)
 
                 xpts_df = filtered_data.copy()
-                xpts_df["Avg_Atk_FDR"] = xpts_df["Team"].map(team_atk_fdr).fillna(3.5)
-                xpts_df["Avg_Def_FDR"] = xpts_df["Team"].map(team_def_fdr).fillna(3.5)
+                xpts_df["Avg_Atk_FDR"] = xpts_df["Team"].map(_mean_fdr(atk_val)).fillna(3.5)
+                xpts_df["Avg_Def_FDR"] = xpts_df["Team"].map(_mean_fdr(def_val)).fillna(3.5)
 
-                # 2. Definisi Parameter Dasar dan Bobot Posisi FPL
-                goal_pts = {"GKP": 6, "DEF": 6, "MID": 5, "FWD": 4}
-                cs_pts = {"GKP": 4, "DEF": 4, "MID": 1, "FWD": 0}
-                
-                xpts_df["Goal_Weight"] = xpts_df["Position"].map(goal_pts)
-                xpts_df["CS_Weight"] = xpts_df["Position"].map(cs_pts)
+                # 2. xPts per gameweek dari komponen (menit, xG/xA, clean sheet, BGW/DGW)
+                xpts_matrix, xpts_gws = compute_xpts_matrix(xpts_df, fixture_table, team_matches, n_gws=8)
+                gw_cols = [f"xPts_GW{k}" for k in range(1, horizon + 1)]
+                xpts_df["xPts_GW1"] = xpts_matrix["xPts_GW1"].round(2).values
+                xpts_df["Proj_xPts"] = xpts_matrix[gw_cols].sum(axis=1).round(2).values
 
-                # 2b. Injeksi Faktor Expected Minutes (xMins)
-                # Menghukum pemain cadangan/akademi dengan mengasumsikan standar pemain inti adalah 2500 menit per musim
-                xmins_factor = (xpts_df["Minutes"] / 2500.0).clip(lower=0.05, upper=1.0)
-                play_prob = (xpts_df["Chance_of_Playing"].fillna(100.0) / 100.0) * xmins_factor
-                
-                # Normalisasi statistik akumulatif menjadi per-90 menit
-                games_played = (xpts_df["Minutes"] / 90.0).clip(lower=1.0)
-                xg_per_gw = xpts_df["xG"] / games_played
-                xa_per_gw = xpts_df["xA"] / games_played
-                
-                # 3. Modulator Distribusi Dixon-Coles
-                atk_factor = 3.5 / xpts_df["Avg_Atk_FDR"]
-                def_factor = 3.5 / xpts_df["Avg_Def_FDR"]
-
-                # 4. Kalkulasi Deterministik xPts
-                base_xpts_per_gw = (
-                    2.0 + 
-                    (xg_per_gw * xpts_df["Goal_Weight"] * atk_factor) + 
-                    (xa_per_gw * 3.0 * atk_factor) + 
-                    (0.30 * xpts_df["CS_Weight"] * def_factor)
-                ) * play_prob
-
-                xpts_df["Proj_xPts"] = (base_xpts_per_gw * horizon).round(2)
-                
-                # INJEKSI VARIABEL BARU UNTUK 1-GW HORIZON
-                xpts_df["xPts_GW1"] = base_xpts_per_gw.round(2)
-                
-                # 4b. Kalibrasi Pembagi VORP (Dinaikkan dari 0.1 menjadi 0.5 sesuai batas pergerakan harga FPL)
+                # 3. Kalibrasi Pembagi VORP (sesuai batas pergerakan harga FPL)
                 xpts_df["Proj_Value"] = (xpts_df["Proj_xPts"] / (xpts_df["Cost"] - xpts_df["Base_Cost"]).clip(lower=0.5)).round(2)
 
-                # 4b. Kalkulasi Model Edge (Delta vs FPL Public API)
-                ep_next_cum = pd.to_numeric(xpts_df["ep_next"], errors="coerce").fillna(0.0) * horizon
-                xpts_df["Model_Edge"] = (xpts_df["Proj_xPts"] - ep_next_cum).round(2)
-
+                # 4. Model Edge: xPts pekan depan vs ep_next FPL (keduanya satu gameweek)
+                xpts_df["Model_Edge"] = (xpts_df["xPts_GW1"] - pd.to_numeric(xpts_df["ep_next"], errors="coerce").fillna(0.0)).round(2)
                 # 5. Visualisasi Kuadran Nilai
                 st.markdown(f"#### Value Quadrant Mapping (Next {horizon} GWs)")
                 st.caption("Top-Left quadrant indicates maximum point potential at minimum cost.")
@@ -781,44 +762,18 @@ if app_module == "FPL Decision Engine":
 
             if st.button("Run Multi-Horizon Optimization"):
                 with st.spinner("Solving joint MILP across multiple gameweeks using Dixon-Coles projections..."):
-                    horizon_df = filtered_data[filtered_data["Availability"] == "Available"].copy()
-                    projection_cols = []
                     
-                    if "matrix_results" in locals() and matrix_results:
-                        atk_lbl, atk_val = matrix_results["attack"]
-                        
-                        goal_pts = {"GKP": 6, "DEF": 6, "MID": 5, "FWD": 4}
-                        cs_pts = {"GKP": 4, "DEF": 4, "MID": 1, "FWD": 0}
-                        horizon_df["Goal_Weight"] = horizon_df["Position"].map(goal_pts)
-                        horizon_df["CS_Weight"] = horizon_df["Position"].map(cs_pts)
-                        
-                        games_played = (horizon_df["Minutes"] / 90.0).clip(lower=1.0)
-                        xg_per_gw = horizon_df["xG"] / games_played
-                        xa_per_gw = horizon_df["xA"] / games_played
-                        play_prob = (horizon_df["Chance_of_Playing"].fillna(100.0) / 100.0) * (horizon_df["Minutes"] / 2500.0).clip(lower=0.05, upper=1.0)
+                    horizon_df = filtered_data[filtered_data["Availability"] == "Available"].copy()
 
-                        for w in range(1, horizon_weeks + 1):
-                            col_name = f"xPts_GW{w}"
-                            gw_key = f"GW{w}"
-                            
-                            if gw_key in atk_val.columns:
-                                team_fdr_series = atk_val[gw_key]
-                                team_fdr = horizon_df["Team"].map(team_fdr_series)
-                                team_fdr = team_fdr.apply(lambda x: float(x) if pd.notna(x) and x != 99.0 else 3.5).fillna(3.5)
-                            else:
-                                team_fdr = 3.5
-                                
-                            fdr_factor = 3.5 / team_fdr
-                            base_gw = (
-                                2.0 + 
-                                (xg_per_gw * horizon_df["Goal_Weight"] * fdr_factor) + 
-                                (xa_per_gw * 3.0 * fdr_factor) + 
-                                (0.30 * horizon_df["CS_Weight"])
-                            ) * play_prob
-                            
-                            horizon_df[col_name] = base_gw.round(2)
-                            projection_cols.append(col_name)
+                    if "matrix_results" in locals() and matrix_results:
+                        xpts_matrix, xpts_gws = compute_xpts_matrix(
+                            horizon_df, fixture_table, team_matches, n_gws=horizon_weeks
+                        )
+                        projection_cols = [f"xPts_GW{k}" for k in range(1, horizon_weeks + 1)]
+                        for col_name in projection_cols:
+                            horizon_df[col_name] = xpts_matrix[col_name].round(2).values
                     else:
+                        projection_cols = []
                         for w in range(1, horizon_weeks + 1):
                             col_name = f"xPts_GW{w}"
                             horizon_df[col_name] = pd.to_numeric(horizon_df["ep_next"], errors="coerce").fillna(0.0)
